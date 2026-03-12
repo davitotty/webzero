@@ -254,4 +254,3 @@ uint64_t platform_now_ms(void) {
 }
 
 #endif /* _WIN32 */
-#endif /* _WIN32 */

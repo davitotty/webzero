@@ -243,6 +243,6 @@ The entire file is validated at load time, then never touched again.
 
 ## License
 
-MIT — do whatever you want, just don't remove the copyright notice.
+Apache 2.0 — free to use, modify, and distribute. See `LICENSE` for details.
 
 > "The best code is no code. The second best is code that does exactly one thing with zero waste."

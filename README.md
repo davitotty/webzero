@@ -107,7 +107,7 @@ Benchmark: `wrk -t4 -c50 -d30s`, serving a 12KB HTML page (3.2KB brotli-compress
 ### Option A — npm (recommended)
 
 ```bash
-npm install -g webzero
+npm install -g @davitotty/webzero
 ```
 
 This installs the `wz` command globally and automatically downloads the right prebuilt binary for your platform.

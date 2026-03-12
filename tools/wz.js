@@ -289,38 +289,95 @@ function cmdServe(bundleFile, port) {
         if (!fs.existsSync(bundleFile)) {
             console.error('wz: bundle not found: ' + bundleFile); process.exit(1);
         }
-        const binPath = getBinaryPath();
-        if (!fs.existsSync(binPath)) {
-            console.error('wz: WebZero binary not found.\n    Run: wz update');
-            process.exit(1);
+
+        const buf = fs.readFileSync(bundleFile);
+        const configOff = buf.readUInt32LE(20);
+        const assetCount = buf.readUInt32LE(configOff + 72);
+        const trieNodeCount = buf.readUInt32LE(configOff + 80);
+        const assetsOff = buf.readUInt32LE(12);
+        const trieOff = buf.readUInt32LE(8);
+
+        // Load assets
+        const assets = [];
+        for (let i = 0; i < assetCount; i++) {
+            const base = assetsOff + i * ASSET_ENTRY_SIZE;
+            const offset = buf.readUInt32LE(base);
+            const clen = buf.readUInt32LE(base + 4);
+            const olen = buf.readUInt32LE(base + 8);
+            const mime = buf.slice(base + 12, base + 44).toString('utf8').replace(/\0.*$/, '');
+            const enc = buf.readUInt8(base + 44);
+            // data starts after asset table
+            const dataStart = assetsOff + assetCount * ASSET_ENTRY_SIZE;
+            const data = buf.slice(dataStart + offset, dataStart + offset + clen);
+            assets.push({ mime, enc, data, olen });
         }
 
-        const binVer = getBinaryVersion();
-        if (binVer && binVer !== WZ_VERSION) {
-            process.stderr.write('wz: warning: binary version (' + binVer + ') differs from CLI version (' + WZ_VERSION + ').\n');
-            process.stderr.write('    Run "wz update" to synchronize.\n\n');
+        // Load trie
+        const trieNodes = [];
+        for (let i = 0; i < trieNodeCount; i++) {
+            const base = trieOff + i * DISK_TRIE_NODE_SIZE;
+            const seg = buf.slice(base, base + 32).toString('utf8').replace(/\0.*$/, '');
+            const cc = buf.readUInt16LE(base + 32);
+            const children = [];
+            for (let j = 0; j < cc; j++) children.push(buf.readUInt16LE(base + 34 + j * 2));
+            const ai = buf.readInt32LE(base + 50);
+            trieNodes.push({ seg, children, ai });
         }
 
-        const routeCount = getRouteCount(bundleFile);
-        printStartupBanner(bundleFile, port, routeCount);
-
-        const args = [bundleFile, String(port)];
-        const proc = spawn(binPath, args, { stdio: 'inherit' });
-
-        proc.on('error', function (err) {
-            if (err.code === 'EACCES') {
-                console.error('wz: permission denied running binary. Try: chmod +x ' + binPath);
-            } else if (err.code === 'EADDRINUSE') {
-                console.error('wz: port ' + port + ' is already in use.\n    Try: wz serve ' + bundleFile + ' --port ' + (port + 1));
-            } else {
-                console.error('wz: failed to start server: ' + err.message);
+        // Trie lookup
+        function lookup(urlPath) {
+            const segs = urlPath.split('/').filter(Boolean);
+            let node = trieNodes[0];
+            for (const seg of segs) {
+                const child = node.children.map(i => trieNodes[i]).find(n => n.seg === seg);
+                if (!child) return -1;
+                node = child;
             }
-            process.exit(1);
+            return node.ai;
+        }
+
+        printStartupBanner(bundleFile, port, trieNodeCount);
+
+        const server = http.createServer(function(req, res) {
+            let urlPath = req.url.split('?')[0];
+            if (urlPath === '/') urlPath = '/index';
+
+            let ai = lookup(urlPath);
+            if (ai === -1 && !urlPath.includes('.')) ai = lookup(urlPath + '/index');
+            if (ai === -1) { res.writeHead(404); res.end('Not Found'); return; }
+
+            const asset = assets[ai];
+            const acceptsBrotli = (req.headers['accept-encoding'] || '').includes('br');
+
+            if (asset.enc === 1 && acceptsBrotli) {
+                res.writeHead(200, {
+                    'Content-Type': asset.mime,
+                    'Content-Encoding': 'br',
+                    'Content-Length': asset.data.length,
+                    'Cache-Control': 'max-age=3600',
+                });
+                res.end(asset.data);
+            } else if (asset.enc === 1) {
+                // decompress for browsers that don't support brotli
+                zlib.brotliDecompress(asset.data, function(err, decoded) {
+                    if (err) { res.writeHead(500); res.end('decompress error'); return; }
+                    res.writeHead(200, {
+                        'Content-Type': asset.mime,
+                        'Content-Length': decoded.length,
+                        'Cache-Control': 'max-age=3600',
+                    });
+                    res.end(decoded);
+                });
+            } else {
+                res.writeHead(200, { 'Content-Type': asset.mime, 'Content-Length': asset.data.length });
+                res.end(asset.data);
+            }
         });
 
-        proc.on('exit', function (code) { process.exit(code || 0); });
-        process.on('SIGINT', function () { proc.kill('SIGINT'); });
-        process.on('SIGTERM', function () { proc.kill('SIGTERM'); });
+        server.listen(port, function() {});
+        process.on('SIGINT', function() { server.close(); process.exit(0); });
+        process.on('SIGTERM', function() { server.close(); process.exit(0); });
+
     } catch (err) {
         console.error('wz serve error: ' + err.message); process.exit(1);
     }

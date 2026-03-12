@@ -1,5 +1,5 @@
 {
-    "name": "webzero",
+    "name": "@davitotty/webzero",
     "version": "1.0.0",
     "description": "Ultra-minimal web server for low-end hardware. Serves 5,000 req/sec on a Pentium III.",
     "keywords": [
@@ -9,10 +9,13 @@
         "embedded",
         "raspberry pi",
         "minimal",
-        "cli"
+        "cli",
+        "linux",
+        "open source",
+        "windows"
     ],
     "author": "davitotty",
-    "license": "MIT",
+    "license": "Apache-2.0",
     "repository": {
         "type": "git",
         "url": "https://github.com/davitotty/webzero.git"
@@ -22,7 +25,7 @@
         "url": "https://github.com/davitotty/webzero/issues"
     },
     "bin": {
-        "wz": "./tools/wz.js"
+        "wz": "tools/wz.js"
     },
     "scripts": {
         "postinstall": "node tools/install.js"
@@ -36,6 +39,5 @@
         "README.md",
         "BUNDLE_SPEC.md",
         "LICENSE"
-    ],
-    "dependencies": {}
+    ]
 }

@@ -1,0 +1,106 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl
+        run: sudo apt-get install -y musl-tools
+
+      - name: Build Linux x64
+        run: |
+          musl-gcc -O3 -static -o webzero-linux-x64 \
+            main.c core/pool.c core/bundle.c core/router.c core/vm.c platform/linux.c \
+            -I. -Wall -Wextra
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webzero-linux-x64
+          path: webzero-linux-x64
+
+  build-linux-arm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM cross-compiler
+        run: sudo apt-get install -y gcc-arm-linux-gnueabihf
+
+      - name: Build Linux ARM
+        run: |
+          arm-linux-gnueabihf-gcc -O3 -static -o webzero-linux-arm \
+            main.c core/pool.c core/bundle.c core/router.c core/vm.c platform/linux.c \
+            -I. -Wall -Wextra
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webzero-linux-arm
+          path: webzero-linux-arm
+
+  build-windows-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW
+        run: sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Build Windows x64
+        run: |
+          x86_64-w64-mingw32-gcc -O3 -o webzero-windows-x64.exe \
+            main.c core/pool.c core/bundle.c core/router.c core/vm.c platform/windows.c \
+            -I. -lws2_32 -lkernel32 -Wall -Wextra
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webzero-windows-x64.exe
+          path: webzero-windows-x64.exe
+
+  build-windows-x86:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW x86
+        run: sudo apt-get install -y gcc-mingw-w64-i686
+
+      - name: Build Windows x86
+        run: |
+          i686-w64-mingw32-gcc -O3 -o webzero-windows-x86.exe \
+            main.c core/pool.c core/bundle.c core/router.c core/vm.c platform/windows.c \
+            -I. -lws2_32 -lkernel32 -Wall -Wextra
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webzero-windows-x86.exe
+          path: webzero-windows-x86.exe
+
+  release:
+    needs: [build-linux-x64, build-linux-arm, build-windows-x64, build-windows-x86]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            webzero-linux-x64/webzero-linux-x64
+            webzero-linux-arm/webzero-linux-arm
+            webzero-windows-x64.exe/webzero-windows-x64.exe
+            webzero-windows-x86.exe/webzero-windows-x86.exe
+          generate_release_notes: true

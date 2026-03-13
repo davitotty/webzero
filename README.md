@@ -1,6 +1,6 @@
 # WebZero
 
-> A web server that serves 5,000 req/sec on a 2001 Pentium III.  
+> A minimal web server built for old hardware.  
 > Single binary. No dependencies. Runs on Linux 2.6+ and Windows XP+.
 
 ```
@@ -92,15 +92,7 @@ No queue. No waiting. Under overload, the server sheds load immediately instead 
 
 ## Benchmarks
 
-| Hardware | OS | req/sec | latency p99 | Binary size |
-|---|---|---|---|---|
-| Pentium III 1.0 GHz | Linux 4.9 | 5,200 | 18ms | 68 KB |
-| Raspberry Pi 1 B | Linux 4.19 | 1,800 | 52ms | 68 KB |
-| Intel Atom N270 | Linux 5.4 | 8,400 | 9ms | 68 KB |
-| Core i5-6500 | Linux 5.15 | 48,000 | 1ms | 68 KB |
-| Pentium 4 2.4GHz | Windows XP SP3 | 3,100 | 28ms | 112 KB |
-
-Benchmark: `wrk -t4 -c50 -d30s`, serving a 12KB HTML page (3.2KB brotli-compressed).
+Benchmarks on real hardware coming soon. Currently tested on modern hardware during development.
 
 ## Quick Start
 
@@ -174,6 +166,20 @@ node tools/wz.js build examples/landing-page
 node tools/wz.js serve examples/landing-page.web 3000
 ```
 
+### Image Optimization
+
+WebZero supports responsive image generation at build time via `wzimg`:
+
+```bash
+# Build with responsive image variants
+wz build ./my-site --responsive
+
+# This generates size variants at 320, 640, 960, 1280, 1920px
+# Use srcset in your HTML to serve the right size
+```
+
+If a `.webp` file exists alongside an image, WebZero will serve the WebP version automatically for better compression.
+
 ### Inspect a Bundle
 
 ```bash
@@ -193,8 +199,12 @@ webzero/
 │   ├── platform.h            ← thin HAL interface
 │   ├── linux.c               ← epoll + sendfile
 │   └── windows.c             ← IOCP + TransmitFile
+├── third_party/
+│   ├── stb_image.h           ← image decoding (vendored)
+│   └── stb_image_write.h     ← image encoding (vendored)
 ├── tools/
 │   ├── wz.js                 ← CLI entry point (zero npm deps)
+│   ├── wzimg.c               ← image resize utility
 │   └── install.js            ← postinstall binary downloader
 ├── examples/
 │   ├── blog/
@@ -235,11 +245,10 @@ The entire file is validated at load time, then never touched again.
 ## Stretch Goals (Future GitHub Issues)
 
 - [ ] TLS via embedded mbedTLS (~60KB overhead)
-- [ ] HTTP/2 frame parser (pre-computed headers only, no HPACK)
 - [ ] WASM handler support (replace bytecode VM with µWASM runtime)
-- [ ] `.web` hot-reload without restart (`inotify` / `ReadDirectoryChangesW`)
+- [x] `.web` hot-reload without restart (`inotify` / `ReadDirectoryChangesW`)
 - [ ] ARM/RISC-V port for embedded targets
-- [ ] `wz.js` image optimization: WebP conversion + responsive size generation
+- [x] `wz.js` image optimization: WebP support + responsive size generation
 
 ## License
 

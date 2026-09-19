@@ -1,435 +1,152 @@
-/*
- * main.c — WebZero entry point
- * Request pipeline:
- *   accept → parse headers → trie_lookup → send asset / run VM handler → done
- *
- * Zero malloc after startup. Zero threads.
- */
+/* WebZero: fixed-memory HTTP server. All response storage is per connection. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-
-#include "core/pool.h"
+#include <errno.h>
 #include "core/bundle.h"
 #include "core/router.h"
 #include "core/vm.h"
-#include "platform/platform.h"
-
-/* ------------------------------------------------------------------ */
-/* Pre-built response header templates (never formatted at runtime)    */
-/* ------------------------------------------------------------------ */
-
-static const char HDR_200_BR[] =
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Encoding: br\r\n"
-    "Cache-Control: max-age=31536000, immutable\r\n"
-    "Vary: Accept, Accept-Encoding\r\n"
-    "Content-Length: ";
-/* Append: <len>\r\n\r\n then asset bytes */
-
-static const char HDR_200_RAW[] =
-    "HTTP/1.1 200 OK\r\n"
-    "Cache-Control: max-age=3600\r\n"
-    "Content-Length: ";
-
-static const char HDR_404[] =
-    "HTTP/1.1 404 Not Found\r\n"
-    "Content-Type: text/plain\r\n"
-    "Content-Length: 9\r\n\r\n"
-    "Not Found";
-
-static const char HDR_405[] =
-    "HTTP/1.1 405 Method Not Allowed\r\n"
-    "Content-Length: 0\r\n\r\n";
-
-static const char HDR_500[] =
-    "HTTP/1.1 500 Internal Server Error\r\n"
-    "Content-Length: 0\r\n\r\n";
-
-static const char HDR_302_PREFIX[] =
-    "HTTP/1.1 302 Found\r\nLocation: ";
-static const char HDR_302_SUFFIX[] =
-    "\r\nContent-Length: 0\r\n\r\n";
-
-/* ------------------------------------------------------------------ */
-/* Loaded bundle (global, single instance)                             */
-/* ------------------------------------------------------------------ */
-
-static Bundle g_bundle;
-
-/* ------------------------------------------------------------------ */
-/* HTTP request mini-parser (header-only, no body yet)                */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    char  method[8];
-    char  path[512];
-    char  query[256];    /* raw query string after '?' */
-    char  version[10];
-    int   keep_alive;
-    int   accepts_webp;  /* non-zero if Accept header contains image/webp */
-} HTTPRequest;
-
-/*
- * Parse the first line and Connection header from buf.
- * Returns 0 on success, -1 if the request is malformed.
- */
-static int parse_request(const uint8_t *buf, uint32_t len, HTTPRequest *req) {
-    const char *p   = (const char *)buf;
-    const char *end = p + len;
-
-    /* Method */
-    int i = 0;
-    while (p < end && *p != ' ' && i < 7) req->method[i++] = *p++;
-    req->method[i] = '\0';
-    if (p >= end || *p != ' ') return -1;
-    p++;
-
-    /* Path */
-    i = 0;
-    while (p < end && *p != ' ' && *p != '?' && i < 511) req->path[i++] = *p++;
-    req->path[i] = '\0';
-
-    /* Query string */
-    req->query[0] = '\0';
-    if (p < end && *p == '?') {
-        p++;
-        i = 0;
-        while (p < end && *p != ' ' && i < 255) req->query[i++] = *p++;
-        req->query[i] = '\0';
+#include "core/connection.h"
+static Bundle bundle;
+static int etag_matches(const char *p, const char *tag) {
+    while (*p) {
+        const char *s, *e;
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        s = p; while (*p && *p != ',') p++; e = p;
+        while (e > s && (e[-1] == ' ' || e[-1] == '\t')) e--;
+        if (e-s == 1 && *s == '*') return 1;
+        if (e-s > 2 && s[0] == 'W' && s[1] == '/') s += 2;
+        if ((size_t)(e-s) == strlen(tag+2) && !memcmp(s, tag+2, (size_t)(e-s))) return 1;
     }
-
-    /* HTTP version */
-    if (p < end && *p == ' ') p++;
-    i = 0;
-    while (p < end && *p != '\r' && *p != '\n' && i < 9) req->version[i++] = *p++;
-    req->version[i] = '\0';
-
-    /* Scan headers for Connection and Accept */
-    req->keep_alive   = (strncmp(req->version, "HTTP/1.1", 8) == 0);
-    req->accepts_webp = 0;
-    const char *h = p;
-    while (h < end - 4) {
-        if (*h == '\r' && *(h+1) == '\n') {
-            h += 2;
-            if (strncasecmp(h, "connection:", 11) == 0) {
-                const char *v = h + 11;
-                while (v < end && *v == ' ') v++;
-                if (strncasecmp(v, "close", 5) == 0)      req->keep_alive = 0;
-                if (strncasecmp(v, "keep-alive", 10) == 0) req->keep_alive = 1;
-            } else if (strncasecmp(h, "accept:", 7) == 0) {
-                /* Scan the Accept value for "image/webp" */
-                const char *v = h + 7;
-                while (v < end && *v == ' ') v++;
-                /* Walk tokens separated by comma */
-                while (v < end && *v != '\r' && *v != '\n') {
-                    while (v < end && (*v == ' ' || *v == ',')) v++;
-                    if (strncasecmp(v, "image/webp", 10) == 0) {
-                        req->accepts_webp = 1;
-                        break;
-                    }
-                    /* Skip to next comma */
-                    while (v < end && *v != ',' && *v != '\r' && *v != '\n') v++;
-                }
-            }
-            if (*h == '\r' && *(h+1) == '\n') break; /* blank line = end of headers */
-        } else {
-            h++;
-        }
-    }
-
     return 0;
 }
-
-/* ------------------------------------------------------------------ */
-/* Number → ascii helper (avoids sprintf during serving)              */
-/* ------------------------------------------------------------------ */
-
-/* Writes decimal representation of n into buf, returns char count. */
-static int u32_to_str(uint32_t n, char *buf) {
-    if (n == 0) { buf[0] = '0'; buf[1] = '\0'; return 1; }
-    char tmp[12];
-    int  i = 0;
-    while (n > 0) { tmp[i++] = (char)('0' + n % 10); n /= 10; }
-    int len = i;
-    for (int j = 0; j < len; j++) buf[j] = tmp[len - 1 - j];
-    buf[len] = '\0';
-    return len;
+static int decimal(const char **p, uint64_t *n) {
+    const char *start = *p; *n = 0;
+    while (**p >= '0' && **p <= '9') {
+        unsigned digit = (unsigned)(*(*p)++ - '0');
+        if (*n > (UINT64_MAX-digit)/10u) return 0;
+        *n = *n * 10u + digit;
+    }
+    return *p != start;
 }
-
-/* ------------------------------------------------------------------ */
-/* Response senders                                                    */
-/* ------------------------------------------------------------------ */
-
-static void send_asset(ConnState *c, const AssetEntry *asset) {
-    const uint8_t *data = g_bundle.base + asset->offset;
-    uint32_t       dlen = asset->compressed_len;
-
-    /* Build header in scratch buffer */
-    pool_scratch_reset();
-
-    const char *hdr_template = (asset->encoding == 1) ? HDR_200_BR : HDR_200_RAW;
-    size_t hlen = strlen(hdr_template);
-
-    uint8_t *hdr_buf = pool_scratch_alloc(hlen + 32 + strlen(asset->mime) + 32);
-    if (!hdr_buf) {
-        platform_send(c, HDR_500, sizeof(HDR_500) - 1);
-        return;
+/* 0: ignore unsupported/invalid syntax, 1: range, -1: unsatisfiable. */
+static int byte_range(const char *p, uint32_t total, uint32_t *start, uint32_t *length) {
+    uint64_t a, b;
+    if (strncmp(p, "bytes=", 6) || strchr(p, ',')) return 0;
+    p += 6;
+    if (*p == '-') {
+        p++; if (!decimal(&p, &b) || *p) return 0;
+        if (!b || !total) return -1;
+        if (b > total) b = total;
+        *start = total-(uint32_t)b; *length = (uint32_t)b; return 1;
     }
-
-    /* Write: HTTP/1.1 200 OK\r\nContent-Type: MIME\r\n...Content-Length: N\r\n\r\n */
-    size_t off = 0;
-    memcpy(hdr_buf + off, hdr_template, hlen); off += hlen;
-
-    /* Content-Length value */
-    char numstr[12];
-    int  nlen = u32_to_str(dlen, numstr);
-    memcpy(hdr_buf + off, numstr, (size_t)nlen); off += (size_t)nlen;
-    memcpy(hdr_buf + off, "\r\nContent-Type: ", 16); off += 16;
-    size_t mlen = strlen(asset->mime);
-    memcpy(hdr_buf + off, asset->mime, mlen); off += mlen;
-    memcpy(hdr_buf + off, "\r\n\r\n", 4); off += 4;
-
-    platform_send(c, hdr_buf, off);
-    platform_send_file(c, data, dlen);
+    if (!decimal(&p, &a) || *p++ != '-') return 0;
+    b = total ? total-1u : 0;
+    if (*p && (!decimal(&p, &b) || *p)) return 0;
+    if (a > b || a >= total) return -1;
+    if (b >= total) b = total-1u;
+    *start = (uint32_t)a; *length = (uint32_t)(b-a+1); return 1;
 }
-
-static void send_vm_response(ConnState *c, const VMResponse *res) {
-    pool_scratch_reset();
-
-    if (res->redirect_to[0] != '\0') {
-        uint8_t *buf = pool_scratch_alloc(512);
-        if (!buf) { platform_send(c, HDR_500, sizeof(HDR_500) - 1); return; }
-        size_t off = 0;
-        size_t pl = sizeof(HDR_302_PREFIX) - 1;
-        size_t sl = sizeof(HDR_302_SUFFIX) - 1;
-        size_t rl = strlen(res->redirect_to);
-        memcpy(buf + off, HDR_302_PREFIX, pl); off += pl;
-        memcpy(buf + off, res->redirect_to, rl); off += rl;
-        memcpy(buf + off, HDR_302_SUFFIX, sl); off += sl;
-        platform_send(c, buf, off);
-        return;
+static void serve_asset(ConnState *c, const HTTPRequest *r, int32_t index) {
+    const AssetEntry *a = &bundle.assets[index];
+    const uint8_t *data;
+    uint32_t size, start = 0, length;
+    char tag[64], extra[160] = "", *out = (char *)arena.response_bufs[c-arena.conns];
+    int encoded, status = 200, n;
+    const char *reason = "OK";
+    if (r->accepts_webp && a->webp_idx >= 0) { index = a->webp_idx; a = &bundle.assets[index]; }
+    encoded = a->encoding && r->accepts_br > 0;
+    if (!encoded && (!r->accepts_identity || (a->encoding && bundle.version == 1))) {
+        connection_error(c, 406, r->head); return;
     }
-
-    const char *ct = res->content_type[0] ? res->content_type
-                                           : "text/plain; charset=utf-8";
-    size_t ctl  = strlen(ct);
-    uint32_t blen = res->body_len;
-
-    char numstr[12];
-    int  nlen = u32_to_str(blen, numstr);
-
-    /* "HTTP/1.1 XXX ...\r\nContent-Type: ...\r\nContent-Length: N\r\n\r\n" */
-    uint8_t *buf = pool_scratch_alloc(128 + ctl + (size_t)nlen + blen);
-    if (!buf) { platform_send(c, HDR_500, sizeof(HDR_500) - 1); return; }
-
-    size_t off = 0;
-    /* Status line */
-    const char *status_line;
-    switch (res->status) {
-        case 200: status_line = "HTTP/1.1 200 OK\r\n"; break;
-        case 201: status_line = "HTTP/1.1 201 Created\r\n"; break;
-        case 400: status_line = "HTTP/1.1 400 Bad Request\r\n"; break;
-        case 401: status_line = "HTTP/1.1 401 Unauthorized\r\n"; break;
-        case 403: status_line = "HTTP/1.1 403 Forbidden\r\n"; break;
-        case 404: status_line = "HTTP/1.1 404 Not Found\r\n"; break;
-        default:  status_line = "HTTP/1.1 200 OK\r\n"; break;
+    size = encoded ? a->compressed_len : a->original_len;
+    data = bundle.base + bundle.data_offset + (a->encoding && !encoded ? a->raw_offset : a->offset);
+    length = size;
+    snprintf(tag, sizeof(tag), "W/\"%08x-%x-%d\"", bundle.fingerprint, (unsigned)index, encoded);
+    if (etag_matches(r->if_none_match, tag)) { status = 304; reason = "Not Modified"; }
+    else if (!r->head && !r->if_range && r->range[0]) {
+        int range = byte_range(r->range, size, &start, &length);
+        if (range < 0) {
+            status = 416; reason = "Range Not Satisfiable"; length = 0;
+            snprintf(extra, sizeof(extra), "Content-Range: bytes */%u\r\n", size);
+        } else if (range > 0) {
+            status = 206; reason = "Partial Content";
+            snprintf(extra, sizeof(extra), "Content-Range: bytes %u-%u/%u\r\n", start, start+length-1, size);
+        }
     }
-    size_t sll = strlen(status_line);
-    memcpy(buf + off, status_line, sll); off += sll;
-    memcpy(buf + off, "Content-Type: ", 14); off += 14;
-    memcpy(buf + off, ct, ctl); off += ctl;
-    memcpy(buf + off, "\r\nContent-Length: ", 18); off += 18;
-    memcpy(buf + off, numstr, (size_t)nlen); off += (size_t)nlen;
-    memcpy(buf + off, "\r\n\r\n", 4); off += 4;
-    if (blen > 0) {
-        memcpy(buf + off, res->body, blen);
-        off += blen;
-    }
-
-    platform_send(c, buf, off);
+    n = snprintf(out, RESPONSE_BUF_SIZE,
+        "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\n"
+        "%sCache-Control: public, max-age=0, must-revalidate\r\n"
+        "Vary: Accept, Accept-Encoding\r\nETag: %s\r\nAccept-Ranges: bytes\r\n"
+        "X-Content-Type-Options: nosniff\r\n%sConnection: %s\r\n\r\n",
+        status, reason, a->mime, length, encoded ? "Content-Encoding: br\r\n" : "",
+        tag, extra, c->close_after ? "close" : "keep-alive");
+    if (n < 0 || n >= RESPONSE_BUF_SIZE) { connection_error(c, 500, r->head); return; }
+    c->out_len = (uint32_t)n; c->out_sent = 0; c->body = data + start;
+    c->body_len = r->head || status == 304 ? 0 : length; c->body_sent = 0; c->pending = 1;
 }
-
-/* ------------------------------------------------------------------ */
-/* Main request handler (called by platform event loop)               */
-/* ------------------------------------------------------------------ */
-
-static void handle_request(ConnState *c, const uint8_t *buf, uint32_t len) {
-    HTTPRequest req;
-    if (parse_request(buf, len, &req) < 0) {
-        platform_send(c, HDR_405, sizeof(HDR_405) - 1);
-        if (!req.keep_alive) platform_close(c);
-        return;
+static int safe_header(const char *s) {
+    while (*s) { if ((unsigned char)*s < 32 || (unsigned char)*s == 127) return 0; s++; }
+    return 1;
+}
+static void serve_handler(ConnState *c, const HTTPRequest *r, int32_t index) {
+    HandlerEntry h;
+    VMRequest req;
+    VMResponse res;
+    char request_body[CONN_BUF_SIZE], *out = (char *)arena.response_bufs[c-arena.conns];
+    int n;
+    memcpy(&h, &bundle.handlers[index], sizeof(h));
+    memcpy(request_body, r->body, r->body_len); request_body[r->body_len] = 0;
+    req.method = r->method; req.path = r->path; req.query = r->query;
+    req.body = request_body; req.body_len = r->body_len; req.fd = c->fd;
+    if (vm_run(bundle.base+h.offset, h.len, &req, &res) != VM_OK ||
+        !safe_header(res.content_type) || !safe_header(res.redirect_to) || res.status < 200 || res.status > 599) {
+        connection_error(c, 500, r->head); return;
     }
-
-    /* Only GET and HEAD supported for static; POST for dynamic */
-    int is_head = (strncmp(req.method, "HEAD", 4) == 0);
-    int is_get  = (strncmp(req.method, "GET",  3) == 0);
-    int is_post = (strncmp(req.method, "POST", 4) == 0);
-
-    if (!is_get && !is_head && !is_post) {
-        platform_send(c, HDR_405, sizeof(HDR_405) - 1);
-        if (!req.keep_alive) platform_close(c);
-        return;
+    if (res.redirect_to[0]) {
+        n = snprintf(out, RESPONSE_BUF_SIZE, "HTTP/1.1 302 Found\r\nLocation: %s\r\nContent-Length: 0\r\nConnection: %s\r\n\r\n",
+            res.redirect_to, c->close_after ? "close" : "keep-alive"); res.body_len = 0;
+    } else {
+        if (res.status == 204 || res.status == 304) res.body_len = 0;
+        n = snprintf(out, RESPONSE_BUF_SIZE, "HTTP/1.1 %u Response\r\nContent-Type: %s\r\nContent-Length: %u\r\nConnection: %s\r\n\r\n",
+            res.status, res.content_type, res.body_len, c->close_after ? "close" : "keep-alive");
     }
-
-    /* Default path for bare "/" */
-    const char *path = req.path;
-    if (path[0] == '/' && path[1] == '\0') path = "/index";
-
-    RouteMatch match = router_lookup(path);
-
-    if (!match.found) {
-        platform_send(c, HDR_404, sizeof(HDR_404) - 1);
-        if (!req.keep_alive) platform_close(c);
-        return;
-    }
-
+    if (n < 0 || (size_t)n + res.body_len > RESPONSE_BUF_SIZE) { connection_error(c, 500, r->head); return; }
+    if (!r->head) memcpy(out+n, res.body, res.body_len);
+    c->out_len = (uint32_t)n + (r->head ? 0 : res.body_len); c->out_sent = 0;
+    c->body = NULL; c->body_len = c->body_sent = 0; c->pending = 1;
+}
+static void handle_request(ConnState *c, const HTTPRequest *r) {
+    RouteMatch match;
+    int get = !strcmp(r->method, "GET"), post = !strcmp(r->method, "POST");
+    if (!get && !r->head && !post) { connection_error(c, 405, r->head); return; }
+    match = router_lookup(r->path);
+    if (!match.found) { connection_error(c, 404, r->head); return; }
     if (match.asset_idx >= 0) {
-        /* Static asset */
-        if ((uint32_t)match.asset_idx >= g_bundle.config.asset_count) {
-            platform_send(c, HDR_500, sizeof(HDR_500) - 1);
-        } else {
-            const AssetEntry *asset = &g_bundle.assets[match.asset_idx];
-
-            /*
-             * WebP content negotiation: if the client accepts image/webp and
-             * this asset has a pre-built WebP companion bundled alongside it,
-             * serve the WebP version transparently.  No encoding at runtime —
-             * the WebP bytes were placed in the bundle at build time by wz.js.
-             */
-            if (req.accepts_webp
-                    && asset->webp_idx >= 0
-                    && (uint32_t)asset->webp_idx < g_bundle.config.asset_count) {
-                asset = &g_bundle.assets[asset->webp_idx];
-            }
-
-            if (!is_head) {
-                send_asset(c, asset);
-            } else {
-                /* HEAD: send headers only */
-                const char *hdr_template = (asset->encoding == 1)
-                                            ? HDR_200_BR : HDR_200_RAW;
-                pool_scratch_reset();
-                uint8_t *hbuf = pool_scratch_alloc(256);
-                if (hbuf) {
-                    size_t off = strlen(hdr_template);
-                    memcpy(hbuf, hdr_template, off);
-                    char ns[12];
-                    off += (size_t)u32_to_str(asset->compressed_len, ns);
-                    memcpy(hbuf + off - (size_t)u32_to_str(asset->compressed_len, ns),
-                           ns, (size_t)u32_to_str(asset->compressed_len, ns));
-                    memcpy(hbuf + off, "\r\n\r\n", 4); off += 4;
-                    platform_send(c, hbuf, off);
-                }
-            }
-        }
-    } else if (match.handler_idx >= 0) {
-        /* Dynamic handler via VM */
-        if ((uint32_t)match.handler_idx >= g_bundle.config.handler_count) {
-            platform_send(c, HDR_500, sizeof(HDR_500) - 1);
-        } else {
-            const HandlerEntry *he = &g_bundle.handlers[match.handler_idx];
-            const uint8_t *bc     = g_bundle.base + he->offset;
-
-            VMRequest vmreq;
-            vmreq.method   = req.method;
-            vmreq.path     = req.path;
-            vmreq.query    = req.query;
-            vmreq.body     = NULL;
-            vmreq.body_len = 0;
-            vmreq.fd       = c->fd;
-
-            VMResponse vmres;
-            VMResult rv = vm_run(bc, he->len, &vmreq, &vmres);
-            if (rv != VM_OK) {
-                platform_send(c, HDR_500, sizeof(HDR_500) - 1);
-            } else {
-                send_vm_response(c, &vmres);
-            }
-        }
-    }
-
-    if (!req.keep_alive) {
-        platform_close(c);
-    }
+        if (post) { connection_error(c, 405, 0); return; }
+        serve_asset(c, r, match.asset_idx);
+    } else serve_handler(c, r, match.handler_idx);
 }
-
-/* ------------------------------------------------------------------ */
-/* Entry point                                                         */
-/* ------------------------------------------------------------------ */
-
-int main(int argc, char *argv[]) {
-    const char *bundle_path = NULL;
-    int         port        = 8080;
-
-    /* Minimal arg parsing: webzero <bundle.web> [port] */
-    if (argc < 2) {
-        fprintf(stderr,
-            "Usage: webzero <site.web> [port]\n"
-            "       webzero --help\n");
-        return 1;
+int main(int argc, char **argv) {
+    int port;
+    if (argc == 2 && !strcmp(argv[1], "--version")) { puts("webzero 2.0.0 (bundle v1/v2)"); return 0; }
+    if (argc < 2 || argc > 3 || !strcmp(argv[1], "--help") || !strcmp(argv[1], "-h")) {
+        fprintf(stderr, "Usage: webzero <site.web> [port]\nBuild: node tools/wz.js build <directory>\n");
+        return argc == 2 ? 0 : 1;
     }
-
-    if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
-        printf(
-            "webzero — ultra-minimalist web server\n"
-            "  webzero <site.web> [port=8080]\n"
-            "\n"
-            "  The .web bundle contains the entire site.\n"
-            "  Build bundles with: node tools/wz.js build ./my-site\n"
-        );
-        return 0;
-    }
-
-    bundle_path = argv[1];
-    if (argc >= 3) {
-        port = atoi(argv[2]);
-        if (port <= 0 || port > 65535) {
-            fprintf(stderr, "webzero: invalid port '%s'\n", argv[2]);
-            return 1;
+    if (bundle_load(argv[1], &bundle)) return 1;
+    if (router_build(&bundle)) { bundle_unload(&bundle); return 1; }
+    port = bundle.config.port;
+    if (argc == 3) {
+        char *end; long value;
+        errno = 0; value = strtol(argv[2], &end, 10);
+        if (errno || !argv[2][0] || *end || value < 1 || value > 65535) {
+            fprintf(stderr, "webzero: invalid port\n"); bundle_unload(&bundle); return 1;
         }
+        port = (int)value;
     }
-
-    /* Load bundle (mmap) */
-    if (bundle_load(bundle_path, &g_bundle) != 0) return 1;
-
-    /* Use port from bundle config if not overridden */
-    if (argc < 3 && g_bundle.config.port != 0) {
-        port = (int)g_bundle.config.port;
-    }
-
-    fprintf(stderr, "webzero: loaded '%s' (%zu bytes, %u assets, %u handlers)\n",
-            bundle_path,
-            g_bundle.file_size,
-            g_bundle.config.asset_count,
-            g_bundle.config.handler_count);
-
-    /* Build routing trie from bundle */
-    if (router_build(&g_bundle) != 0) {
-        bundle_unload(&g_bundle);
-        return 1;
-    }
-
-#ifdef WZ_DEBUG
-    router_dump();
-#endif
-
-    /* Initialize platform (socket, epoll/IOCP) */
-    if (platform_init(port, MAX_CONNS) != 0) {
-        bundle_unload(&g_bundle);
-        return 1;
-    }
-
-    fprintf(stderr, "webzero: arena size %zu bytes (%u conn slots)\n",
-            sizeof(Arena), MAX_CONNS);
-
-    /* Enter event loop — never returns until SIGINT/SIGTERM */
-    platform_run(handle_request);
-
-    /* Cleanup (rarely reached in production) */
-    bundle_unload(&g_bundle);
-    fprintf(stderr, "\nwebzero: shutdown complete\n");
-    return 0;
+    fprintf(stderr, "webzero: %zu bytes, %u assets, %u routes; arena %zu bytes\n", bundle.file_size,
+        bundle.config.asset_count, bundle.config.route_node_count, sizeof(arena));
+    if (platform_init(port, bundle.config.max_connections, bundle.config.keepalive_timeout_ms)) { bundle_unload(&bundle); return 1; }
+    platform_run(handle_request); bundle_unload(&bundle); return 0;
 }

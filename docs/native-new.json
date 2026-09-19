@@ -1,0 +1,186 @@
+{
+  "passed": 45,
+  "total": 45,
+  "results": [
+    {
+      "name": "identity bytes",
+      "passed": true
+    },
+    {
+      "name": "Brotli bytes",
+      "passed": true
+    },
+    {
+      "name": "Brotli q=0",
+      "passed": true
+    },
+    {
+      "name": "encoding exact token",
+      "passed": true
+    },
+    {
+      "name": "406 when all encodings excluded",
+      "passed": true
+    },
+    {
+      "name": "HEAD metadata",
+      "passed": true
+    },
+    {
+      "name": "HEAD missing route no body",
+      "passed": true
+    },
+    {
+      "name": "POST static rejected",
+      "passed": true
+    },
+    {
+      "name": "method prefix rejected",
+      "passed": true
+    },
+    {
+      "name": "HTML alias",
+      "passed": true
+    },
+    {
+      "name": "directory index",
+      "passed": true
+    },
+    {
+      "name": "20 sibling routes",
+      "passed": true
+    },
+    {
+      "name": "WebP negotiated",
+      "passed": true
+    },
+    {
+      "name": "WebP q=0",
+      "passed": true
+    },
+    {
+      "name": "ETag 304",
+      "passed": true
+    },
+    {
+      "name": "ETag list",
+      "passed": true
+    },
+    {
+      "name": "byte range",
+      "passed": true
+    },
+    {
+      "name": "suffix range",
+      "passed": true
+    },
+    {
+      "name": "unsatisfiable range",
+      "passed": true
+    },
+    {
+      "name": "If-Range falls back to full body",
+      "passed": true
+    },
+    {
+      "name": "invalid percent escape",
+      "passed": true
+    },
+    {
+      "name": "encoded traversal rejected",
+      "passed": true
+    },
+    {
+      "name": "encoded NUL rejected",
+      "passed": true
+    },
+    {
+      "name": "oversized URI",
+      "passed": true
+    },
+    {
+      "name": "missing Host",
+      "passed": true
+    },
+    {
+      "name": "duplicate Host",
+      "passed": true
+    },
+    {
+      "name": "duplicate Content-Length",
+      "passed": true
+    },
+    {
+      "name": "ambiguous transfer framing",
+      "passed": true
+    },
+    {
+      "name": "chunked rejected explicitly",
+      "passed": true
+    },
+    {
+      "name": "oversized header",
+      "passed": true
+    },
+    {
+      "name": "large transfer exact bytes",
+      "passed": true
+    },
+    {
+      "name": "four pipelined requests",
+      "passed": true
+    },
+    {
+      "name": "fragmented headers",
+      "passed": true
+    },
+    {
+      "name": "body framing preserves next request",
+      "passed": true
+    },
+    {
+      "name": "slow reader backpressure and concurrent request",
+      "passed": true
+    },
+    {
+      "name": "96 requests over 32 clients",
+      "passed": true
+    },
+    {
+      "name": "idle incomplete connection expires",
+      "passed": true
+    },
+    {
+      "name": "v1 Brotli compatibility",
+      "passed": true
+    },
+    {
+      "name": "v1 missing identity returns 406",
+      "passed": true
+    },
+    {
+      "name": "reject bad magic",
+      "passed": true
+    },
+    {
+      "name": "reject bad config offset",
+      "passed": true
+    },
+    {
+      "name": "reject bad asset offset",
+      "passed": true
+    },
+    {
+      "name": "reject route self cycle",
+      "passed": true
+    },
+    {
+      "name": "reject invalid asset index",
+      "passed": true
+    },
+    {
+      "name": "reject oversized count",
+      "passed": true
+    }
+  ]
+}

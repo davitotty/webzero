@@ -16,7 +16,9 @@ void pool_scratch_reset(void) {
 
 uint8_t *pool_scratch_alloc(size_t n) {
     /* Align to 8 bytes */
-    size_t aligned = (n + 7u) & ~7u;
+    size_t aligned;
+    if (n > SCRATCH_SIZE) return NULL;
+    aligned = (n + 7u) & ~(size_t)7u;
     if (scratch_used + aligned > SCRATCH_SIZE) {
         return NULL; /* caller must handle this gracefully */
     }

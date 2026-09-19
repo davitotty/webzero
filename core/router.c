@@ -1,149 +1,104 @@
-/*
- * router.c — Binary trie router
- * Builds and traverses a static trie for O(depth) path lookups.
- * Trie nodes live in arena.trie[] — no malloc.
- */
 #include "router.h"
 #include "pool.h"
-#include "bundle.h"
-
 #include <string.h>
 #include <stdio.h>
-
-/* ------------------------------------------------------------------ */
-/* Internal helpers                                                    */
-/* ------------------------------------------------------------------ */
-
-/*
- * Advance *p past the next path segment, writing it into seg (max 31 chars).
- * Returns the length of the segment, 0 if end of path.
- * Segments are split on '/'.
- */
-static int next_segment(const char **p, char *seg) {
-    /* skip leading slashes */
-    while (**p == '/') (*p)++;
-    if (**p == '\0' || **p == '?') return 0;
-
-    int i = 0;
-    while (**p != '\0' && **p != '/' && **p != '?' && i < 31) {
-        seg[i++] = **p;
-        (*p)++;
-    }
-    seg[i] = '\0';
-    return i;
-}
-
-/*
- * Find a child of node_idx whose segment matches seg.
- * Returns child index, or -1 if not found.
- */
-static int find_child(uint16_t node_idx, const char *seg) {
-    const TrieNode *node = &arena.trie[node_idx];
-    for (int i = 0; i < node->child_count; i++) {
-        uint16_t ci = node->children[i];
-        if (strncmp(arena.trie[ci].segment, seg, 32) == 0) {
-            return (int)ci;
-        }
-    }
-    return -1;
-}
-
-/* ------------------------------------------------------------------ */
-/* Bundle route table format (on-disk)                                 */
-/* ------------------------------------------------------------------ */
-
-/*
- * On-disk trie node (packed, stored in ROUTE TABLE section):
- *   char     segment[32]
- *   uint16_t child_count
- *   uint16_t children[8]
- *   int32_t  asset_idx
- *   int32_t  handler_idx
- * Total: 32 + 2 + 16 + 4 + 4 = 58 bytes — but we pad to 64 for alignment.
- */
-#define DISK_TRIE_NODE_SIZE 64
-
-typedef struct {
-    char     segment[32];
-    uint16_t child_count;
-    uint16_t children[8];
-    int32_t  asset_idx;
-    int32_t  handler_idx;
-    uint8_t  _pad[6];
-} __attribute__((packed)) DiskTrieNode;
-
-/* ------------------------------------------------------------------ */
-/* Public API                                                          */
-/* ------------------------------------------------------------------ */
-
+#define NONE UINT16_MAX
+static uint16_t u16(const uint8_t *p) { return (uint16_t)(p[0] | (uint16_t)p[1] << 8); }
+static uint32_t u32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1]<<8 | (uint32_t)p[2]<<16 | (uint32_t)p[3]<<24; }
 int router_build(const Bundle *b) {
-    const BundleHeader *hdr = (const BundleHeader *)b->base;
-    uint32_t count = b->config.route_node_count;
-
-    if (count > MAX_TRIE_NODES) {
-        fprintf(stderr, "webzero: trie too large (%u nodes, max %d)\n",
-                count, MAX_TRIE_NODES);
-        return -1;
-    }
-
-    const DiskTrieNode *disk = (const DiskTrieNode *)(b->base + hdr->route_table_offset);
-
-    for (uint32_t i = 0; i < count; i++) {
+    const BundleHeader *h = (const BundleHeader *)b->base;
+    uint32_t count = b->config.route_node_count, i, edges = 0;
+    uint8_t parents[MAX_TRIE_NODES] = {0};
+    arena.trie_count = 0;
+    for (i = 0; i < count; i++) {
+        const uint8_t *d = b->base + h->route_table_offset + i * 64u;
         TrieNode *n = &arena.trie[i];
-        memcpy(n->segment, disk[i].segment, 32);
-        n->child_count = disk[i].child_count;
-        for (int j = 0; j < 8; j++) {
-            n->children[j] = disk[i].children[j];
+        memcpy(n->segment, d, 32);
+        if (!memchr(n->segment, 0, 32) || (i && !n->segment[0]) || strchr(n->segment, '/')) goto bad;
+        n->first_child = n->next_sibling = NONE;
+        if (b->version == 2) {
+            uint32_t first = u32(d+32), next = u32(d+36);
+            if ((first != UINT32_MAX && (first <= i || first >= count)) ||
+                (next != UINT32_MAX && (next <= i || next >= count))) goto bad;
+            n->first_child = first == UINT32_MAX ? NONE : (uint16_t)first;
+            n->next_sibling = next == UINT32_MAX ? NONE : (uint16_t)next;
+            n->asset_idx = (int32_t)u32(d+40); n->handler_idx = (int32_t)u32(d+44);
+        } else {
+            if (u16(d+32) > 8) goto bad;
+            n->asset_idx = (int32_t)u32(d+50); n->handler_idx = (int32_t)u32(d+54);
         }
-        n->asset_idx   = disk[i].asset_idx;
-        n->handler_idx = disk[i].handler_idx;
+        if (n->asset_idx < -1 || n->handler_idx < -1 ||
+            (n->asset_idx >= 0 && (uint32_t)n->asset_idx >= b->config.asset_count) ||
+            (n->handler_idx >= 0 && (uint32_t)n->handler_idx >= b->config.handler_count) ||
+            (n->asset_idx >= 0 && n->handler_idx >= 0)) goto bad;
     }
-
-    arena.trie_count = count;
-    return 0;
+    if (b->version == 1) for (i = 0; i < count; i++) {
+        const uint8_t *d = b->base + h->route_table_offset + i * 64u;
+        uint16_t j, prev = NONE;
+        for (j = 0; j < u16(d+32); j++) {
+            uint16_t child = u16(d+34+j*2);
+            if (child <= i || child >= count || parents[child]++) goto bad;
+            if (prev == NONE) arena.trie[i].first_child = child;
+            else arena.trie[prev].next_sibling = child;
+            prev = child;
+        }
+    }
+    memset(parents, 0, sizeof(parents));
+    if (arena.trie[0].segment[0] || arena.trie[0].next_sibling != NONE) goto bad;
+    for (i = 0; i < count; i++) {
+        uint16_t child;
+        for (child = arena.trie[i].first_child; child != NONE; child = arena.trie[child].next_sibling) {
+            uint16_t other;
+            if (child <= i || ++edges >= count || parents[child]++) goto bad;
+            for (other = arena.trie[i].first_child; other != child; other = arena.trie[other].next_sibling)
+                if (!strcmp(arena.trie[other].segment, arena.trie[child].segment)) goto bad;
+        }
+    }
+    if (edges != count-1) goto bad;
+    arena.trie_count = count; return 0;
+bad:
+    fprintf(stderr, "webzero: invalid route trie\n"); return -1;
 }
-
+static int child_of(uint16_t node, const char *s, size_t len) {
+    uint16_t child; int wildcard = -1;
+    for (child = arena.trie[node].first_child; child != NONE; child = arena.trie[child].next_sibling) {
+        const char *seg = arena.trie[child].segment;
+        if (strlen(seg) == len && !memcmp(seg, s, len)) return child;
+        if (!strcmp(seg, "*")) wildcard = child;
+    }
+    return wildcard;
+}
 RouteMatch router_lookup(const char *path) {
-    RouteMatch result = { -1, -1, 0 };
-
-    if (arena.trie_count == 0) return result;
-
-    /* Node 0 is always the root "/" */
+    RouteMatch result = {-1,-1,0};
     uint16_t current = 0;
-    const char *p    = path;
-    char seg[32];
-
-    /* Root match */
-    while (next_segment(&p, seg) > 0) {
-        int ci = find_child(current, seg);
-        if (ci < 0) {
-            /* Try wildcard child ("*") */
-            ci = find_child(current, "*");
-            if (ci < 0) return result; /* 404 */
-        }
-        current = (uint16_t)ci;
+    const char *p = path;
+    const TrieNode *n;
+    if (!arena.trie_count) return result;
+    while (*p) {
+        const char *s; size_t len; int child;
+        while (*p == '/') p++;
+        if (!*p) break;
+        s = p; while (*p && *p != '/') p++;
+        len = (size_t)(p-s);
+        if (!*p && len > 5 && !memcmp(s+len-5, ".html", 5)) len -= 5;
+        if (len > 31) return result;
+        child = child_of(current, s, len);
+        if (child < 0) return result;
+        current = (uint16_t)child;
     }
-
-    const TrieNode *node = &arena.trie[current];
-    if (node->asset_idx < 0 && node->handler_idx < 0) {
-        return result; /* intermediate node, not a leaf */
+    n = &arena.trie[current];
+    if (n->asset_idx < 0 && n->handler_idx < 0) {
+        int idx = child_of(current, "index", 5);
+        if (idx < 0) return result;
+        n = &arena.trie[idx];
     }
-
-    result.asset_idx   = node->asset_idx;
-    result.handler_idx = node->handler_idx;
-    result.found       = 1;
+    result.asset_idx = n->asset_idx; result.handler_idx = n->handler_idx;
+    result.found = n->asset_idx >= 0 || n->handler_idx >= 0;
     return result;
 }
-
 void router_dump(void) {
 #ifdef WZ_DEBUG
-    fprintf(stderr, "=== Router Trie (%u nodes) ===\n", arena.trie_count);
-    for (uint32_t i = 0; i < arena.trie_count; i++) {
-        const TrieNode *n = &arena.trie[i];
-        fprintf(stderr, "[%3u] \"%s\" children=%u asset=%d handler=%d\n",
-                i, n->segment, n->child_count,
-                n->asset_idx, n->handler_idx);
-    }
-    fprintf(stderr, "==============================\n");
+    uint32_t i;
+    for (i=0; i<arena.trie_count; i++) fprintf(stderr, "[%u] %s asset=%d handler=%d\n", i, arena.trie[i].segment, arena.trie[i].asset_idx, arena.trie[i].handler_idx);
 #endif
 }

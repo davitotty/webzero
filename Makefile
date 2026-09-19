@@ -1,82 +1,26 @@
-# WebZero Makefile
-# Targets:
-#   make            → Linux native (requires gcc or musl-gcc)
-#   make static     → Linux static binary (requires musl-gcc)
-#   make windows    → Windows XP target (requires i686-w64-mingw32-gcc)
-#   make debug      → Linux debug build with AddressSanitizer
-#   make clean
-
-# ─────────────────────────── sources ────────────────────────────────
-SRCS = main.c \
-       core/pool.c \
-       core/bundle.c \
-       core/router.c \
-       core/vm.c \
-       platform/linux.c
-
-SRCS_WIN = main.c \
-           core/pool.c \
-           core/bundle.c \
-           core/router.c \
-           core/vm.c \
-           platform/windows.c
-
-# ─────────────────────────── Linux native ───────────────────────────
-CC      = gcc
-CFLAGS  = -std=c99 -O3 -Wall -Wextra -Wpedantic \
-          -fno-stack-protector -fomit-frame-pointer \
-          -I.
-OUT     = webzero
-
-all: $(OUT)
-
-$(OUT): $(SRCS)
-	$(CC) $(CFLAGS) -o $@ $^
-	@echo "Built $@ ($(shell wc -c < $@) bytes)"
-
-# ─────────────────────────── Linux static (musl) ────────────────────
-CC_MUSL   = musl-gcc
-CFLAGS_ST = -std=c99 -O3 -static -Wall -Wextra -Wpedantic \
-            -fno-stack-protector -fomit-frame-pointer \
-            -I.
-OUT_ST    = webzero-static
-
-static: $(SRCS)
-	$(CC_MUSL) $(CFLAGS_ST) -o $(OUT_ST) $^
-	@echo "Built $(OUT_ST) ($(shell wc -c < $(OUT_ST)) bytes)"
-	@strip $(OUT_ST)
-	@echo "Stripped $(OUT_ST) ($(shell wc -c < $(OUT_ST)) bytes)"
-
-# ─────────────────────────── Windows XP target ──────────────────────
-CC_WIN    = i686-w64-mingw32-gcc
-CFLAGS_WIN= -std=c99 -O3 -Wall -Wextra \
-            -D_WIN32_WINNT=0x0501 \
-            -fno-stack-protector -fomit-frame-pointer \
-            -I.
-LDFLAGS_WIN = -lws2_32 -lkernel32 -lmswsock
-OUT_WIN   = webzero.exe
-
-windows:
-	$(CC_WIN) $(CFLAGS_WIN) -o $(OUT_WIN) $(SRCS_WIN) $(LDFLAGS_WIN)
-	@echo "Built $(OUT_WIN)"
-
-# ─────────────────────────── Debug build ────────────────────────────
-CFLAGS_DBG = -std=c99 -O0 -g3 -Wall -Wextra -Wpedantic \
-             -DWZ_DEBUG \
-             -fsanitize=address,undefined \
-             -I.
-OUT_DBG = webzero-debug
-
-debug: $(SRCS)
-	$(CC) $(CFLAGS_DBG) -o $(OUT_DBG) $^
-	@echo "Built $(OUT_DBG) (debug + ASan)"
-
-# ─────────────────────────── Utilities ──────────────────────────────
+CC = gcc
+CPPFLAGS = -I. -D_POSIX_C_SOURCE=200809L
+CFLAGS = -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror
+CORE = core/pool.c core/bundle.c core/router.c core/vm.c core/http.c core/connection.c
+HEADERS = $(wildcard core/*.h platform/*.h)
+all: webzero
+webzero: main.c $(CORE) platform/linux.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ main.c $(CORE) platform/linux.c
+static: main.c $(CORE) platform/linux.c $(HEADERS)
+	musl-gcc $(CPPFLAGS) $(CFLAGS) -static -o webzero-static main.c $(CORE) platform/linux.c
+windows: main.c $(CORE) platform/windows.c $(HEADERS)
+	$(CC_WIN) -I. $(CFLAGS) -D_WIN32_WINNT=0x0501 -o webzero.exe main.c $(CORE) platform/windows.c -lws2_32 -lkernel32
+CC_WIN = i686-w64-mingw32-gcc
+debug: main.c $(CORE) platform/linux.c $(HEADERS)
+	$(CC) $(CPPFLAGS) -std=c99 -O1 -g -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -o webzero-debug main.c $(CORE) platform/linux.c
+unit: tests/unit.c core/http.c core/vm.c core/pool.c $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o tests/unit tests/unit.c core/http.c core/vm.c core/pool.c
+	./tests/unit
+test: all unit
+	python3 tests/native.py ./webzero
+	python3 tests/native_vm.py ./webzero
+wzimg: tools/wzimg.c third_party/stb_image.h third_party/stb_image_write.h
+	$(CC) -std=c99 -O2 -Wall -Wextra -o $@ tools/wzimg.c -lm
 clean:
-	rm -f $(OUT) $(OUT_ST) $(OUT_DBG) $(OUT_WIN) *.o
-
-size: all static
-	@echo "=== Binary sizes ==="
-	@ls -lh $(OUT) $(OUT_ST) 2>/dev/null
-
-.PHONY: all static windows debug clean size
+	rm -f webzero webzero-static webzero-debug webzero.exe tests/unit tests/unit-asan wzimg *.o
+.PHONY: all static windows debug unit test clean

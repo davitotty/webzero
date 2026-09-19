@@ -1,0 +1,224 @@
+{
+  "passed": 7,
+  "total": 45,
+  "results": [
+    {
+      "name": "identity bytes",
+      "passed": false,
+      "error": "identity bytes"
+    },
+    {
+      "name": "Brotli bytes",
+      "passed": false,
+      "error": "Brotli bytes"
+    },
+    {
+      "name": "Brotli q=0",
+      "passed": false,
+      "error": "Brotli q=0"
+    },
+    {
+      "name": "encoding exact token",
+      "passed": false,
+      "error": "encoding exact token"
+    },
+    {
+      "name": "406 when all encodings excluded",
+      "passed": false,
+      "error": "406 when all encodings excluded"
+    },
+    {
+      "name": "HEAD metadata",
+      "passed": false,
+      "error": "HEAD metadata"
+    },
+    {
+      "name": "HEAD missing route no body",
+      "passed": true
+    },
+    {
+      "name": "POST static rejected",
+      "passed": false,
+      "error": "POST static rejected"
+    },
+    {
+      "name": "method prefix rejected",
+      "passed": false,
+      "error": "method prefix rejected"
+    },
+    {
+      "name": "HTML alias",
+      "passed": false,
+      "error": "HTML alias"
+    },
+    {
+      "name": "directory index",
+      "passed": false,
+      "error": "directory index"
+    },
+    {
+      "name": "20 sibling routes",
+      "passed": false,
+      "error": "20 sibling routes"
+    },
+    {
+      "name": "WebP negotiated",
+      "passed": false,
+      "error": "WebP negotiated"
+    },
+    {
+      "name": "WebP q=0",
+      "passed": false,
+      "error": "WebP q=0"
+    },
+    {
+      "name": "ETag 304",
+      "passed": false,
+      "error": "ETag 304"
+    },
+    {
+      "name": "ETag list",
+      "passed": false,
+      "error": "ETag list"
+    },
+    {
+      "name": "byte range",
+      "passed": false,
+      "error": "byte range"
+    },
+    {
+      "name": "suffix range",
+      "passed": false,
+      "error": "suffix range"
+    },
+    {
+      "name": "unsatisfiable range",
+      "passed": false,
+      "error": "unsatisfiable range"
+    },
+    {
+      "name": "If-Range falls back to full body",
+      "passed": false,
+      "error": "If-Range falls back to full body"
+    },
+    {
+      "name": "invalid percent escape",
+      "passed": false,
+      "error": "invalid percent escape"
+    },
+    {
+      "name": "encoded traversal rejected",
+      "passed": false,
+      "error": "encoded traversal rejected"
+    },
+    {
+      "name": "encoded NUL rejected",
+      "passed": false,
+      "error": "encoded NUL rejected"
+    },
+    {
+      "name": "oversized URI",
+      "passed": false,
+      "error": "oversized URI"
+    },
+    {
+      "name": "missing Host",
+      "passed": false,
+      "error": "missing Host"
+    },
+    {
+      "name": "duplicate Host",
+      "passed": false,
+      "error": "duplicate Host"
+    },
+    {
+      "name": "duplicate Content-Length",
+      "passed": false,
+      "error": "duplicate Content-Length"
+    },
+    {
+      "name": "ambiguous transfer framing",
+      "passed": false,
+      "error": "ambiguous transfer framing"
+    },
+    {
+      "name": "chunked rejected explicitly",
+      "passed": false,
+      "error": "chunked rejected explicitly"
+    },
+    {
+      "name": "oversized header",
+      "passed": false,
+      "error": "timed out"
+    },
+    {
+      "name": "large transfer exact bytes",
+      "passed": false,
+      "error": "large transfer exact bytes"
+    },
+    {
+      "name": "four pipelined requests",
+      "passed": false,
+      "error": "timed out"
+    },
+    {
+      "name": "fragmented headers",
+      "passed": false,
+      "error": "fragmented headers"
+    },
+    {
+      "name": "body framing preserves next request",
+      "passed": false,
+      "error": "body framing preserves next request"
+    },
+    {
+      "name": "slow reader backpressure and concurrent request",
+      "passed": false,
+      "error": ""
+    },
+    {
+      "name": "96 requests over 32 clients",
+      "passed": false,
+      "error": "96 requests over 32 clients"
+    },
+    {
+      "name": "idle incomplete connection expires",
+      "passed": false,
+      "error": "timed out"
+    },
+    {
+      "name": "v1 Brotli compatibility",
+      "passed": false,
+      "error": "v1 Brotli compatibility"
+    },
+    {
+      "name": "v1 missing identity returns 406",
+      "passed": false,
+      "error": "v1 missing identity returns 406"
+    },
+    {
+      "name": "reject bad magic",
+      "passed": true
+    },
+    {
+      "name": "reject bad config offset",
+      "passed": true
+    },
+    {
+      "name": "reject bad asset offset",
+      "passed": true
+    },
+    {
+      "name": "reject route self cycle",
+      "passed": true
+    },
+    {
+      "name": "reject invalid asset index",
+      "passed": true
+    },
+    {
+      "name": "reject oversized count",
+      "passed": true
+    }
+  ]
+}

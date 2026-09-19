@@ -1,174 +1,79 @@
-# WebZero Bundle Format Specification
-## Version 1.0
+# WebZero bundle format
 
-### Overview
+All integers are little-endian. The builder emits **version 2**. Readers also accept structurally valid version-1 bundles. Binary layout is independent of host C structure padding. Runtime targets are little-endian machines.
 
-A `.web` file is a single binary file containing the complete compiled site.
-The server `mmap()`s this file at startup. From that point on, zero file I/O
-occurs during request handling — the OS page cache does all the work.
+## File layout
 
----
-
-### File Layout
-
-```
-Offset  Size  Field
-──────────────────────────────────────────────────────────
-0       4     magic            0x57454230  ("WEB0", little-endian)
-4       4     version          Must be 1
-8       4     route_table_offset  Byte offset to ROUTE TABLE section
-12      4     assets_offset    Byte offset to ASSETS section
-16      4     handlers_offset  Byte offset to HANDLERS section
-20      4     config_offset    Byte offset to CONFIG section
-24      4     total_size       Total file size in bytes (for validation)
-28      …     ROUTE TABLE
-…       …     ASSETS TABLE
-…       …     ASSETS DATA
-…       …     HANDLERS TABLE  (may be empty)
-…       …     HANDLERS DATA   (may be empty)
-…       96    CONFIG
+```text
+28-byte header
+64-byte route nodes
+56-byte asset entries
+asset payloads (Brotli and/or identity)
+8-byte handler entries and bytecode, when present
+96-byte configuration
 ```
 
-All integer fields are **little-endian**.
+Header fields, each `uint32`, in order: magic `0x57454230`, version, route-table offset, asset-table offset, handler-table offset, configuration offset, exact file size. Offsets in the header are absolute. Sections must be ordered and wholly inside the file. The configuration is the final 96 bytes.
 
----
+## Version-2 route node (64 bytes)
 
-### ROUTE TABLE Section
+| Offset | Type | Meaning |
+|---|---|---|
+| 0 | char[32] | UTF-8 path segment, NUL-terminated; root is empty |
+| 32 | uint32 | First child node, or `0xffffffff` |
+| 36 | uint32 | Next sibling node, or `0xffffffff` |
+| 40 | int32 | Asset index, or -1 |
+| 44 | int32 | Handler index, or -1 |
+| 48 | byte[16] | Reserved, writer emits zeros |
 
-A packed array of trie nodes. Each node is **64 bytes**:
+Node 0 is the root. Every other node has exactly one parent. Children and sibling links point forward in the array; sibling chains are strictly increasing. All nodes are reachable. Siblings have unique segment names. A node cannot name both an asset and a handler. The current runtime limit is 1,024 nodes; sibling count has no additional eight-entry limit.
 
-```
-Offset  Size  Field
-──────────────────────────────────────────
-0       32    segment    null-terminated path segment, e.g. "about"
-               Node 0 is always the root node (segment = "")
-32      2     child_count  Number of valid entries in children[]
-34      16    children[8]  u16 indices into this same trie array
-50      4     asset_idx    i32, -1 if not a leaf
-54      4     handler_idx  i32, -1 if static
-58      6     _pad         zero bytes for alignment
-```
+The compiler serializes nodes breadth-first, in deterministic filename order. UTF-8 segments must fit in 31 bytes. The compiler rejects route collisions after removing `.html`, rather than overwriting one asset. Lookup supports extensionless HTML, explicit `.html`, directory index routes and legacy segment wildcards. The filesystem compiler does not accept wildcard names.
 
-**Wildcard nodes**: A node with segment `"*"` matches any URL segment at
-that position. Exact matches take priority over wildcards.
+## Asset entry (56 bytes, both versions)
 
-**Lookup algorithm**:
-1. Start at node 0 (root).
-2. For each path segment of the URL (split on `/`):
-   a. Search current node's `children[]` for a node whose `segment` matches.
-   b. If not found, look for a child with segment `"*"`.
-   c. If still not found → 404.
-3. Current node's `asset_idx` / `handler_idx` determines the response.
+| Offset | Type | Meaning |
+|---|---|---|
+| 0 | uint32 | Selected payload offset, relative to **start of asset data** |
+| 4 | uint32 | Selected payload byte length |
+| 8 | uint32 | Identity/original byte length |
+| 12 | char[32] | NUL-terminated MIME type, no control characters |
+| 44 | uint8 | Encoding: 0 = identity, 1 = Brotli |
+| 45 | byte[3] | Reserved |
+| 48 | int32 | WebP companion asset index, or -1 |
+| 52 | uint32 | v2 identity payload offset when encoding=1; reserved in v1 |
 
----
+`asset_data_start = assets_offset + asset_count * 56`.
 
-### ASSETS Section
+For encoding 0, the two lengths must match and offset 0 identifies the identity payload. For encoding 1 in v2, offset 0 identifies Brotli bytes and offset 52 identifies identity bytes; **both offsets are relative to asset_data_start**. All payload ranges must end before the handler section. The file is limited to the 32-bit addressable size in its header.
 
-Immediately follows the ROUTE TABLE. Layout:
+The original C implementation incorrectly treated asset offsets as absolute, while the original JavaScript compiler wrote them relative to the asset data area. The v2 implementation uses the compiler's relative convention for both versions.
 
-**Asset Table**: a flat array of asset entries. Each entry is **56 bytes**:
+The compiler compresses eligible text/wasm assets only when at least 33 bytes are saved. Quality defaults to 5 and can be selected from 0 to 11. Already compressed formats are stored raw. Identity duplication is deliberate: the native server never has to decode Brotli during a request.
 
-```
-Offset  Size  Field
-──────────────────────────────────────────
-0       4     offset           Byte offset within the asset DATA block
-4       4     compressed_len   Compressed (brotli) byte count
-8       4     original_len     Original uncompressed byte count
-12      32    mime             Content-Type string, null-padded
-44      1     encoding         0 = raw, 1 = brotli
-45      3     _pad
-```
+## Handler entries
 
-**Asset Data block**: the concatenated compressed asset bytes.
-The `offset` field in each entry is relative to the start of this data block,
-which begins immediately after the asset table:
+Each entry contains an absolute `uint32` bytecode offset and a `uint32` bytecode length. Bytecode follows the handler table and ends before configuration. The stock compiler currently emits zero handlers; custom producers may use the native VM instruction set in `core/vm.h` and `core/vm.c`.
 
-```
-asset_data_start = assets_offset + asset_count * 56
-asset_i_ptr      = base + asset_data_start + assets[i].offset
-```
+Instructions encode inline operands in little-endian order. PUSH_STR has a `uint16` byte count followed by bytes; PUSH_INT has an `int32`; jumps have a signed `int16` displacement relative to the PC after their operand. Execution is bounded to 10,000 instructions, stack depth 32, and strings of at most 255 bytes. Overflowing integer addition wraps modulo 2^32. Invalid bounds, stack operations or instruction limits fail the request with 500.
 
-The server sends these bytes verbatim over the socket with
-`Content-Encoding: br`.
+## Configuration (96 bytes)
 
----
+| Offset | Type | Meaning |
+|---|---|---|
+| 0 | char[64] | NUL-terminated hostname metadata |
+| 64 | uint16 | Default port |
+| 66 | uint16 | Connection limit (1–256; 0 uses 256) |
+| 68 | uint32 | Inactivity timeout in ms (0 uses 30,000) |
+| 72 | uint32 | Asset count |
+| 76 | uint32 | Handler count |
+| 80 | uint32 | Route-node count |
+| 84 | byte[12] | Reserved |
 
-### HANDLERS Section
+Hostname is metadata, not a bind-address setting. Servers listen on all IPv4 interfaces by default.
 
-A flat array of handler entries. Each entry is **8 bytes**:
+## Version-1 compatibility
 
-```
-Offset  Size  Field
-──────────────────────────────────────────
-0       4     offset   Byte offset to bytecode within handler DATA block
-4       4     len      Byte length of bytecode
-```
+V1 route nodes store segment[32], child count (`uint16` at 32), up to eight child indices (`uint16[8]` at 34), asset index (`int32` at 50), handler index (`int32` at 54), and six padding bytes. Readers convert this tree to their internal representation after validating it. Invalid or orphaned legacy trees are rejected.
 
-Handler bytecode follows the same layout as the asset data block.
-
-#### Bytecode Instruction Set
-
-| Opcode | Hex  | Operands              | Description                      |
-|--------|------|-----------------------|----------------------------------|
-| HALT   | 0x00 | —                     | Stop execution, send response    |
-| PUSH_STR | 0x01 | u16 len, bytes      | Push string literal onto stack   |
-| PUSH_INT | 0x02 | i32 value           | Push integer onto stack          |
-| LOAD_REQ | 0x03 | u8 field            | Push request field (0=method, 1=path, 2=query, 3=body) |
-| STORE_RES| 0x04 | u8 field            | Pop, store into response (0=status, 1=body, 2=content_type, 3=redirect) |
-| ADD      | 0x05 | —                   | Pop two values, push sum or concat |
-| EQ       | 0x06 | —                   | Pop two, push 1 if equal else 0  |
-| JMP      | 0x07 | i16 rel_offset      | Unconditional jump               |
-| JMP_IF   | 0x08 | i16 rel_offset      | Jump if top-of-stack is truthy   |
-| SEND     | 0x09 | —                   | Finalize and send response       |
-| REDIRECT | 0x0A | —                   | Pop URL, send 302                |
-| GETPARAM | 0x0B | u8 namelen, bytes   | Push query param value by name   |
-| RESPOND  | 0x0C | u16 status          | Pop body, send status + body     |
-
-Stack depth: 32 values maximum. Values are either int32 or string (max 255 bytes).
-
----
-
-### CONFIG Section
-
-Fixed 96-byte structure at `config_offset`:
-
-```
-Offset  Size  Field
-──────────────────────────────────────────────────────────
-0       64    hostname           null-padded UTF-8 string
-64      2     port               TCP port (default: 8080)
-66      2     max_connections    Cap on simultaneous connections
-68      4     keepalive_timeout_ms
-72      4     asset_count        Number of entries in asset table
-76      4     handler_count      Number of entries in handler table
-80      4     route_node_count   Number of trie nodes
-84      12    _reserved          zero bytes
-```
-
----
-
-### Validation
-
-On load, the server checks:
-1. `magic == 0x57454230`
-2. `version == 1`
-3. `total_size == file size on disk`
-4. All section offsets are within `[0, total_size)`
-
-If any check fails, the server prints an error and exits. The bundle is
-never modified in place — it is always read-only (`PROT_READ` / `FILE_MAP_READ`).
-
----
-
-### Tool Support
-
-```bash
-# Build a bundle from a source directory
-node tools/wz.js build ./my-site
-
-# Inspect a bundle
-node tools/wz.js inspect ./my-site.web
-
-# Serve a bundle for development (JS implementation, no C binary needed)
-node tools/wz.js serve ./my-site.web --port 3000
-```
+V1 compressed assets contain no identity fallback. The C server returns 406 when a client cannot accept their representation. The Node development server may decode them at startup, subject to its decoded-memory cap. Rebuilding the source directory as v2 restores full encoding negotiation.

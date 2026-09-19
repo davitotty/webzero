@@ -1,0 +1,176 @@
+{
+  "date": "2026-09-19T22:14:27.731Z",
+  "baselineCommit": "1d0d262",
+  "environment": {
+    "node": "v25.5.0",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "Intel(R) Core(TM) i7-9700 CPU @ 3.00GHz"
+  },
+  "methodology": "Three alternating builds of the unchanged example landing page. Default old quality 11 versus new 5, plus new quality 11. HTTP: same Node executable, 16 keep-alive clients, 5000 requests per trial, 5 alternating trials, warmup 500; every body compared byte-for-byte.",
+  "builds": {
+    "old": [
+      {
+        "ms": 3216.8011,
+        "bytes": 3744835
+      },
+      {
+        "ms": 3306.9692000000005,
+        "bytes": 3744835
+      },
+      {
+        "ms": 3611.0906999999997,
+        "bytes": 3744835
+      }
+    ],
+    "new": [
+      {
+        "ms": 140.46029999999973,
+        "bytes": 3750407
+      },
+      {
+        "ms": 83.28890000000001,
+        "bytes": 3750407
+      },
+      {
+        "ms": 95.59649999999965,
+        "bytes": 3750407
+      }
+    ],
+    "newQuality11": [
+      {
+        "ms": 91.95090000000027,
+        "bytes": 3750199
+      },
+      {
+        "ms": 90.18870000000061,
+        "bytes": 3750199
+      },
+      {
+        "ms": 95.52160000000003,
+        "bytes": 3750199
+      }
+    ]
+  },
+  "http": {
+    "old": [
+      {
+        "requests": 5000,
+        "concurrency": 16,
+        "elapsedMs": 1248.7747,
+        "successfulRps": 4003.9248072530618,
+        "p50Ms": 3.595100000000457,
+        "p95Ms": 6.23319999999876,
+        "errors": 0,
+        "bytes": 435140000
+      },
+      {
+        "requests": 5000,
+        "concurrency": 16,
+        "elapsedMs": 1128.8338000000003,
+        "successfulRps": 4429.350007060382,
+        "p50Ms": 3.4385000000002037,
+        "p95Ms": 5.785100000000966,
+        "errors": 0,
+        "bytes": 435140000
+      },
+      {
+        "requests": 5000,
+        "concurrency": 16,
+        "elapsedMs": 1081.0181000000011,
+        "successfulRps": 4625.269456635365,
+        "p50Ms": 3.2885999999998603,
+        "p95Ms": 5.62579999999798,
+        "errors": 0,
+        "bytes": 435140000
+      },
+      {
+        "requests": 5000,
+        "concurrency": 16,
+        "elapsedMs": 1053.575499999999,
+        "successfulRps": 4745.744372377684,
+        "p50Ms": 2.982899999999063,
+        "p95Ms": 5.431200000002718,
+        "errors": 0,
+        "bytes": 435140000
+      },
+      {
+        "requests": 5000,
+        "concurrency": 16,
+        "elapsedMs": 1089.2460999999967,
+        "successfulRps": 4590.330871967331,
+        "p50Ms": 3.1173000000017055,
+        "p95Ms": 5.613099999998667,
+        "errors": 0,
+        "bytes": 435140000
+      }
+    ],
+    "new": [
+      {
+        "requests": 5000,
+        "concurrency": 16,
+        "elapsedMs": 1309.1947,
+        "successfulRps": 3819.1416448600044,
+        "p50Ms": 3.8605999999999767,
+        "p95Ms": 7.317800000000716,
+        "errors": 0,
+        "bytes": 435140000
+      },
+      {
+        "requests": 5000,
+        "concurrency": 16,
+        "elapsedMs": 1081.7137999999995,
+        "successfulRps": 4622.294732673284,
+        "p50Ms": 3.431699999999182,
+        "p95Ms": 5.287500000000364,
+        "errors": 0,
+        "bytes": 435140000
+      },
+      {
+        "requests": 5000,
+        "concurrency": 16,
+        "elapsedMs": 991.1173000000017,
+        "successfulRps": 5044.811547533265,
+        "p50Ms": 2.9527000000016415,
+        "p95Ms": 5.594799999998941,
+        "errors": 0,
+        "bytes": 435140000
+      },
+      {
+        "requests": 5000,
+        "concurrency": 16,
+        "elapsedMs": 852.8535999999986,
+        "successfulRps": 5862.670920308021,
+        "p50Ms": 2.237199999999575,
+        "p95Ms": 4.873600000002625,
+        "errors": 0,
+        "bytes": 435140000
+      },
+      {
+        "requests": 5000,
+        "concurrency": 16,
+        "elapsedMs": 837.2488999999987,
+        "successfulRps": 5971.939766060019,
+        "p50Ms": 2.180899999999383,
+        "p95Ms": 4.941000000002532,
+        "errors": 0,
+        "bytes": 435140000
+      }
+    ],
+    "payloadBytes": 87028,
+    "payloadSha256": "40316c3f6210dfeec28addfb027df9ca8d512c2695c51106969ed4f9a00ddd27"
+  },
+  "summary": {
+    "oldBuildMs": 3306.9692000000005,
+    "newBuildMs": 95.59649999999965,
+    "newQuality11BuildMs": 91.95090000000027,
+    "oldBundleBytes": 3744835,
+    "oldRps": 4590.330871967331,
+    "oldP95Ms": 5.62579999999798,
+    "oldErrors": 0,
+    "newBundleBytes": 3750407,
+    "newRps": 5044.811547533265,
+    "newP95Ms": 5.287500000000364,
+    "newErrors": 0
+  }
+}

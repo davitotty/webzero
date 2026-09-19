@@ -1,0 +1,54 @@
+name: Test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test
+      - run: make test debug
+      - run: python3 tests/native.py ./webzero-debug
+      - run: python3 tests/native_vm.py ./webzero-debug
+      - name: Sanitized parser and VM mutation tests
+        run: |
+          gcc -I. -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -o tests/unit-asan tests/unit.c core/http.c core/vm.c core/pool.c
+          ./tests/unit-asan
+      - run: npm pack --dry-run --ignore-scripts
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc make
+      - run: npm test
+      - shell: msys2 {0}
+        run: make windows CC_WIN=gcc
+      - shell: pwsh
+        run: |
+          $env:PATH = 'C:\msys64\mingw64\bin;' + $env:PATH
+          python tests/native.py ./webzero.exe
+          python tests/native_vm.py ./webzero.exe
+  node-compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['18', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test

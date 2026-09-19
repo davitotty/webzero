@@ -32,7 +32,7 @@ typedef struct {
     const char *query;    /* raw query string after '?' */
     const char *body;
     uint32_t    body_len;
-    int         fd;       /* socket to write response to */
+    intptr_t    fd;       /* socket to write response to */
 } VMRequest;
 
 /* Response context built by VM */
@@ -50,6 +50,7 @@ typedef enum {
     VM_ERR_HALT  = 1,
     VM_ERR_OOB   = 2,  /* out of bounds */
     VM_ERR_STACK = 3,
+    VM_ERR_LIMIT = 4,
 } VMResult;
 
 VMResult vm_run(const uint8_t *bytecode, uint32_t len,

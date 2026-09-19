@@ -27,3 +27,11 @@ node_modules/
 
 # Test artifacts
 bench/results/
+
+# Native test executables and Python caches
+tests/unit
+tests/unit-asan
+__pycache__/
+wzimg
+wzimg.exe
+*.tmp

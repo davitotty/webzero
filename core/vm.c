@@ -1,5 +1,5 @@
 /*
- * vm.c — Tiny bytecode interpreter for dynamic handlers
+ * vm.c â€” Tiny bytecode interpreter for dynamic handlers
  * Stack-based VM. Stack depth: 32. No malloc.
  */
 #include "vm.h"
@@ -45,7 +45,10 @@ static int stack_push_int(VMStack *st, int32_t i) {
 static int stack_push_str(VMStack *st, const char *s) {
     if (st->top >= STACK_DEPTH) return -1;
     st->vals[st->top].type = VAL_STR;
-    strncpy(st->vals[st->top].v.s, s, STR_MAX - 1);
+    size_t n = strlen(s);
+    if (n >= STR_MAX) n = STR_MAX - 1;
+    memcpy(st->vals[st->top].v.s, s, n);
+    st->vals[st->top].v.s[n] = 0;
     st->vals[st->top].v.s[STR_MAX - 1] = '\0';
     st->top++;
     return 0;
@@ -54,11 +57,6 @@ static int stack_push_str(VMStack *st, const char *s) {
 static StackVal *stack_pop(VMStack *st) {
     if (st->top <= 0) return NULL;
     return &st->vals[--st->top];
-}
-
-static StackVal *stack_peek(VMStack *st) {
-    if (st->top <= 0) return NULL;
-    return &st->vals[st->top - 1];
 }
 
 /* ------------------------------------------------------------------ */
@@ -94,14 +92,14 @@ static int get_query_param(const char *query, const char *key, char *out) {
 /*
  * Each instruction: [1 byte opcode] [optional operands]
  *
- * OP_PUSH_STR  : [u16 offset] [u16 len] followed by inline string
+ * OP_PUSH_STR  : [u16 len] followed by inline string
  * OP_PUSH_INT  : [i32 value]
  * OP_LOAD_REQ  : [u8 field_id]   0=method 1=path 2=query 3=body
  * OP_STORE_RES : [u8 field_id]   0=status 1=body 2=content_type 3=redirect
  * OP_JMP       : [i16 offset]    relative to current PC after reading operand
  * OP_JMP_IF    : [i16 offset]
  * OP_GETPARAM  : [u8 namelen][name bytes]
- * OP_RESPOND   : [u16 status] — pops body from stack
+ * OP_RESPOND   : [u16 status] â€” pops body from stack
  * Others       : no operands
  */
 
@@ -126,10 +124,12 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
     res->status = 200;
     strncpy(res->content_type, "text/html; charset=utf-8", 64);
 
-    uint32_t pc = 0;
+    uint32_t pc = 0, steps = 0;
 
     while (pc < blen) {
-        uint8_t op = READ_U8(bytecode, pc);
+        uint8_t op;
+        if (++steps > 10000) return VM_ERR_LIMIT;
+        op = READ_U8(bytecode, pc);
 
         switch ((Opcode)op) {
 
@@ -139,12 +139,12 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
         case OP_PUSH_INT: {
             int32_t val;
             if (pc + 4 > blen) return VM_ERR_OOB;
-            val = (int32_t)bytecode[pc]
-                | ((int32_t)bytecode[pc+1] <<  8)
-                | ((int32_t)bytecode[pc+2] << 16)
-                | ((int32_t)bytecode[pc+3] << 24);
+            val = (int32_t)((uint32_t)bytecode[pc]
+                | ((uint32_t)bytecode[pc+1] << 8)
+                | ((uint32_t)bytecode[pc+2] << 16)
+                | ((uint32_t)bytecode[pc+3] << 24));
             pc += 4;
-            stack_push_int(&st, val);
+            if (stack_push_int(&st, val) < 0) return VM_ERR_STACK;
             break;
         }
 
@@ -159,7 +159,7 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
             memcpy(tmp, bytecode + pc, copy);
             tmp[copy] = '\0';
             pc += slen;
-            stack_push_str(&st, tmp);
+            if (stack_push_str(&st, tmp) < 0) return VM_ERR_STACK;
             break;
         }
 
@@ -174,7 +174,7 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
                 case 3: val = req->body   ? req->body   : ""; break;
                 default: val = ""; break;
             }
-            stack_push_str(&st, val);
+            if (stack_push_str(&st, val) < 0) return VM_ERR_STACK;
             break;
         }
 
@@ -182,7 +182,7 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
             if (pc + 1 > blen) return VM_ERR_OOB;
             uint8_t field = READ_U8(bytecode, pc);
             StackVal *top = stack_pop(&st);
-            if (!top) break;
+            if (!top) return VM_ERR_STACK;
             switch (field) {
                 case 0: /* status */
                     res->status = (uint16_t)(top->type == VAL_INT
@@ -213,14 +213,17 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
             StackVal *a_val = stack_pop(&st);
             if (!a_val || !b_val) return VM_ERR_STACK;
             if (a_val->type == VAL_INT && b_val->type == VAL_INT) {
-                stack_push_int(&st, a_val->v.i + b_val->v.i);
+                if (stack_push_int(&st, (int32_t)((uint32_t)a_val->v.i + (uint32_t)b_val->v.i)) < 0) return VM_ERR_STACK;
             } else {
                 /* string concatenation */
                 char tmp[STR_MAX];
                 const char *sa = (a_val->type == VAL_STR) ? a_val->v.s : "";
                 const char *sb = (b_val->type == VAL_STR) ? b_val->v.s : "";
-                snprintf(tmp, STR_MAX, "%s%s", sa, sb);
-                stack_push_str(&st, tmp);
+                size_t na = strlen(sa), nb = strlen(sb);
+                if (na >= STR_MAX) na = STR_MAX-1;
+                if (nb > STR_MAX-1-na) nb = STR_MAX-1-na;
+                memcpy(tmp, sa, na); memcpy(tmp+na, sb, nb); tmp[na+nb] = 0;
+                if (stack_push_str(&st, tmp) < 0) return VM_ERR_STACK;
             }
             break;
         }
@@ -234,7 +237,7 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
                 eq = (a_val->v.i == b_val->v.i);
             else if (a_val->type == VAL_STR && b_val->type == VAL_STR)
                 eq = (strcmp(a_val->v.s, b_val->v.s) == 0);
-            stack_push_int(&st, eq);
+            if (stack_push_int(&st, eq) < 0) return VM_ERR_STACK;
             break;
         }
 
@@ -243,7 +246,8 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
             int16_t offset = (int16_t)((uint16_t)bytecode[pc]
                                       | ((uint16_t)bytecode[pc+1] << 8));
             pc += 2;
-            pc = (uint32_t)((int32_t)pc + offset);
+            if ((int64_t)pc + offset < 0 || (int64_t)pc + offset >= blen) return VM_ERR_OOB;
+            pc = (uint32_t)((int64_t)pc + offset);
             break;
         }
 
@@ -253,10 +257,12 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
                                       | ((uint16_t)bytecode[pc+1] << 8));
             pc += 2;
             StackVal *cond = stack_pop(&st);
-            int truth = cond && ((cond->type == VAL_INT && cond->v.i != 0)
+            if (!cond) return VM_ERR_STACK;
+            int truth = ((cond->type == VAL_INT && cond->v.i != 0)
                               || (cond->type == VAL_STR && cond->v.s[0] != '\0'));
             if (truth) {
-                pc = (uint32_t)((int32_t)pc + offset);
+                if ((int64_t)pc + offset < 0 || (int64_t)pc + offset >= blen) return VM_ERR_OOB;
+                pc = (uint32_t)((int64_t)pc + offset);
             }
             break;
         }
@@ -266,7 +272,8 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
 
         case OP_REDIRECT: {
             StackVal *top = stack_pop(&st);
-            if (top && top->type == VAL_STR) {
+            if (!top || top->type != VAL_STR) return VM_ERR_STACK;
+            if (top->type == VAL_STR) {
                 strncpy(res->redirect_to, top->v.s, sizeof(res->redirect_to) - 1);
                 res->status = 302;
             }
@@ -284,7 +291,7 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
             pc += namelen;
             char out[STR_MAX];
             get_query_param(req->query, key, out);
-            stack_push_str(&st, out);
+            if (stack_push_str(&st, out) < 0) return VM_ERR_STACK;
             break;
         }
 
@@ -293,7 +300,8 @@ VMResult vm_run(const uint8_t *bytecode, uint32_t blen,
             res->status = (uint16_t)bytecode[pc] | ((uint16_t)bytecode[pc+1] << 8);
             pc += 2;
             StackVal *top = stack_pop(&st);
-            if (top && top->type == VAL_STR) {
+            if (!top || top->type != VAL_STR) return VM_ERR_STACK;
+            if (top->type == VAL_STR) {
                 strncpy(res->body, top->v.s, sizeof(res->body) - 1);
                 res->body_len = (uint32_t)strlen(res->body);
             }

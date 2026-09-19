@@ -1,257 +1,98 @@
 # WebZero
 
-> A minimal web server built for old hardware.  
-> Single binary. No dependencies. Runs on Linux 2.6+ and Windows XP+.
+A small, dependency-free native HTTP server for prebuilt sites. Compile a directory into one `.web` bundle, then serve it from a memory mapping with a fixed connection arena.
 
-```
-                         ┌───────────────────────────────┐
-                         │         .web bundle            │
-                         │  ┌─────┐ ┌──────┐ ┌────────┐ │
-  request                │  │trie │ │assets│ │handlers│ │  response
- ──────────►  accept()   │  │(mmap│ │ (br) │ │(bytecod│ │  ──────────►
-             parse hdrs  │  │ 'd) │ │      │ │    e)  │ │  sendfile()
-             trie_lookup │  └──┬──┘ └──────┘ └────────┘ │
-             sendfile()  │     └─── O(depth) lookup ─────┘
-```
+WebZero 2 replaces the original HTTP and networking implementation, validates bundle contents before serving, and includes automated tests and reproducible benchmarks. See [the measured comparison](docs/BENCHMARKS.md) and [migration notes](docs/MIGRATION.md).
 
-## Why
+## Quick start
 
-Every web server assumes you have RAM, disk IOPS, and a modern CPU. WebZero assumes you don't. It is built for:
+Build the checked-out version with Node.js 18 or newer:
 
-- Raspberry Pi 1 (700 MHz ARM, 256 MB RAM)
-- Pentium III workstations and thin clients
-- Windows XP machines still running in production
-- Old netbooks, Atom-powered NAS boxes, embedded boards
-
-The design constraint is simple: if memory can fragment, it will. If there are threads, they will deadlock. If there's a config parser, it will crash on edge cases. WebZero eliminates all of those.
-
-## How It Works
-
-### 1. The .web Bundle
-
-Your site is compiled into a single binary file:
-
-```bash
-node tools/wz.js build ./my-site
-```
-
-The bundle contains:
-
-- **Route trie** — a binary trie built from your directory structure
-- **Assets** — every file, Brotli-compressed at level 11 (never at runtime)
-- **Handlers** — optional bytecode for contact forms / simple APIs
-- **Config** — hostname, port, max connections
-
-At startup, the server `mmap()`s this file. The entire site lives in virtual memory. The OS page cache does all the work. Zero file I/O during requests.
-
-### 2. The Memory Model
-
-```c
-static Arena arena;  // lives in BSS — zero-initialized, 4MB
-```
-
-One flat arena, allocated once, used forever. After `main()` initialization:
-
-- Zero calls to `malloc`
-- Zero calls to `free`
-- Zero threads, zero mutexes
-
-The server cannot fragment, cannot leak, cannot race.
-
-### 3. The Request Pipeline
-
-```
-accept() → read headers into arena.conn_bufs[slot]
-         → trie_lookup(path)           ← O(1-3 pointer chases)
-         → platform_send_file(asset)   ← zero-copy path to socket
-         → or: vm_run(bytecode)        ← for dynamic handlers
-```
-
-Response headers are pre-built byte arrays — no `sprintf` during serving:
-
-```c
-static const char HDR_200_BR[] =
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Encoding: br\r\n"
-    "Cache-Control: max-age=31536000, immutable\r\n"
-    "Vary: Accept-Encoding\r\n"
-    "Content-Length: ";
-```
-
-### 4. Backpressure
-
-```c
-if (active_connections >= MAX_CONNS) {
-    send(new_fd, HDR_503, sizeof(HDR_503), 0);
-    close(new_fd);
-    return;
-}
-```
-
-No queue. No waiting. Under overload, the server sheds load immediately instead of accumulating state and eventually crashing.
-
-## Benchmarks
-
-Benchmarks on real hardware coming soon. Currently tested on modern hardware during development.
-
-## Quick Start
-
-### Option A — npm (recommended)
-
-```bash
-npm install -g @davitotty/webzero
-```
-
-This installs the `wz` command globally and automatically downloads the right prebuilt binary for your platform.
-
-```bash
-# Build your site into a .web bundle
-wz build ./my-site
-
-# Serve it
-wz serve my-site.web --port 8080
-
-# Inspect bundle contents
-wz inspect my-site.web
-
-# Update the server binary
-wz update
-```
-
-Startup looks like this:
-
-```
-┌─────────────────────────────┐
-│  WebZero v1.0.0             │
-│  bundle : my-site.web       │
-│  port   : 8080              │
-│  routes : 12                │
-│  memory : 4.0 MB reserved   │
-│  ready  ✓                   │
-└─────────────────────────────┘
-```
-
-### Option B — Build from source
-
-**Prerequisites**
-
-- Linux or Windows (XP SP3+)
-- GCC (or `musl-gcc` for static builds, `i686-w64-mingw32-gcc` for Windows)
-- Node.js 14+ (for `wz.js` build tool only — not needed at runtime)
-
-```bash
-git clone https://github.com/davitotty/webzero
-cd webzero
-
-# Linux native (dynamic libc)
-make
-
-# Linux fully static (requires musl-gcc)
-make static
-
-# Windows XP target (cross-compile from Linux)
-make windows
-```
-
-### Build and Serve a Site
-
-```bash
-# Build the example landing page into a .web bundle
+```sh
 node tools/wz.js build examples/landing-page
+node tools/wz.js serve examples/landing-page.web --js --port 8080
+```
 
-# Serve it on port 8080
+Build the native Linux server with GCC and Make:
+
+```sh
+make
+node tools/wz.js serve examples/landing-page.web --native --port 8080
+# Or run it directly, without Node:
 ./webzero examples/landing-page.web 8080
-
-# Or use the JS server for development (no C binary needed)
-node tools/wz.js serve examples/landing-page.web 3000
 ```
 
-### Image Optimization
+The CLI prefers a compatible native binary in the checkout or `~/.webzero`. If neither exists, it explicitly identifies the Node development server it starts. `--native` fails rather than silently switching implementations; `--js` always selects Node. `WEBZERO_BINARY` can select an explicit native executable.
 
-WebZero supports responsive image generation at build time via `wzimg`:
+## What changed in v2
 
-```bash
-# Build with responsive image variants
-wz build ./my-site --responsive
+- **Correct nonblocking I/O:** response buffers belong to their connections; partial writes resume when the socket is writable. Slow readers do not block other clients. Keep-alive, fragmented headers, request bodies and pipelining retain their framing.
+- **Portable networking:** Linux uses level-triggered epoll. Windows uses nonblocking Winsock/select, with pointer-sized socket handles. Both backends share connection and HTTP logic.
+- **Validated bundles:** loaders check section bounds, asset sizes, indices, strings, route ownership and cycles. Malformed bundles fail at startup.
+- **Reliable routing:** v2 removes the eight-child-per-directory limit. It retains a bounded 1,024-node route arena. Duplicate routes, oversized segments and unsupported names fail the build instead of silently losing content.
+- **Offline compression:** compressible files get Brotli only when it saves space. Images, video and precompressed fonts stay raw. Compressed assets also include identity bytes, so the native server needs no decompression library.
+- **HTTP behavior:** GET/HEAD, exact method matching, encoding quality exclusions, WebP negotiation, weak ETags/304, single byte ranges, directory indexes and `.html` aliases. Response headers include `Vary` and `nosniff`.
+- **Bounded VM:** instruction limits, checked stack operations, bounded jumps and defined integer wrapping. POST bodies reach native handlers. Dynamic response headers reject control characters.
+- **Tooling:** deterministic builds, bounded compression concurrency, atomic output replacement, inspect JSON, version-pinned binary downloads and SHA-256 verification against release manifests.
 
-# This generates size variants at 320, 640, 960, 1280, 1920px
-# Use srcset in your HTML to serve the right size
+## Commands
+
+```sh
+node tools/wz.js build ./site --output site.web --quality 5
+node tools/wz.js inspect site.web --json
+node tools/wz.js serve site.web --port 8080
+node tools/wz.js optimize ./site --widths 320,640,1280 --quality 82
+node tools/wz.js version
+node tools/wz.js update
 ```
 
-If a `.webp` file exists alongside an image, WebZero will serve the WebP version automatically for better compression.
+Brotli quality defaults to 5; choose 11 when minimum transfer size matters more than build time. `--quality` on `optimize` is JPEG quality (1–100). Image optimization requires `wzimg`, built separately from `tools/wzimg.c`, and skips already generated `@<width>w.jpg` inputs. `.webp` companions are discovered during bundling; WebZero does not create WebP images itself.
 
-### Inspect a Bundle
+The compiler omits dotfiles/dotdirectories, `node_modules`, symlinks, `.web` bundles and `.wz` scratch files. Build from a dedicated public-content directory. Other ordinary files in that directory are intentionally included.
 
-```bash
-node tools/wz.js inspect examples/landing-page.web
+## Runtime limits and scope
+
+- 256 simultaneous connections maximum, configurable downward in the bundle.
+- Each connection has an 8 KiB input buffer and a 4.5 KiB response buffer. A complete request, including headers and body, must fit in 8,191 bytes.
+- A fixed native arena of approximately 3.3 MiB, plus process stack, code and memory-mapped bundle pages. This is **not** a total RSS guarantee.
+- No application `malloc`/`free`, worker threads or mutexes in the native request path. OS and C runtime internals are outside that guarantee.
+- Request paths: 511 decoded bytes; route segments: 31 UTF-8 bytes; route nodes and assets: 1,024 each. Files larger than the format's 32-bit offsets are unsupported.
+- Inactive connections expire after the bundle timeout, default 30 seconds. This is an inactivity timeout, not a complete slow-client or rate-limiting defense.
+- HTTP/1.0 and HTTP/1.1 only. No TLS, HTTP/2, chunked request bodies, multipart range responses, authentication or hot reload. Use a reverse proxy for TLS and public-edge protections.
+- Static assets accept GET/HEAD. Native bytecode handlers also accept POST; the current builder does not compile handler source. The Node development server does not execute bytecode.
+- Single ranges operate on the selected representation. HEAD ignores Range. If-Range falls back to a full response because validators are weak. Mutable URLs revalidate by default; assets are not incorrectly marked immutable for a year.
+- Asset data is sent from the mapping using socket writes. This is **not** a `sendfile`/`TransmitFile` zero-copy implementation.
+
+The code targets old Linux/Windows APIs (including Windows XP API declarations). Validation here runs on modern Linux and Windows; compatibility with actual XP or vintage hardware has not been measured. Node is a build/development dependency only and does not run on XP.
+
+## Build and test
+
+```sh
+make                         # native Linux, C99, warnings as errors
+make static                  # requires musl-gcc
+make windows                 # requires i686-w64-mingw32-gcc
+make windows CC_WIN=x86_64-w64-mingw32-gcc
+make test                    # native units and socket regressions; Python 3
+make debug
+python3 tests/native.py ./webzero-debug
+npm test                     # tooling, format and Node HTTP suites
+npm pack --dry-run --ignore-scripts
 ```
 
-## Project Structure
+On Windows with MinGW, put its `bin` directory on PATH and use `make windows CC_WIN=gcc`. The native suite also runs as `python tests/native.py ./webzero.exe`.
 
-```
-webzero/
-├── core/
-│   ├── pool.c / pool.h       ← static arena, scratch allocator
-│   ├── bundle.c / bundle.h   ← .web mmap loader and validator
-│   ├── router.c / router.h   ← binary trie: O(depth) path lookup
-│   └── vm.c / vm.h           ← 12-opcode bytecode interpreter
-├── platform/
-│   ├── platform.h            ← thin HAL interface
-│   ├── linux.c               ← epoll + sendfile
-│   └── windows.c             ← IOCP + TransmitFile
-├── third_party/
-│   ├── stb_image.h           ← image decoding (vendored)
-│   └── stb_image_write.h     ← image encoding (vendored)
-├── tools/
-│   ├── wz.js                 ← CLI entry point (zero npm deps)
-│   ├── wzimg.c               ← image resize utility
-│   └── install.js            ← postinstall binary downloader
-├── examples/
-│   ├── blog/
-│   └── landing-page/
-├── bench/
-│   └── run.sh
-├── BUNDLE_SPEC.md            ← .web format specification
-├── package.json
-├── Makefile
-└── main.c                    ← entry point + request pipeline
+CI runs native Linux and Windows tests, Linux sanitizers, and Node compatibility tests. Tagged releases build four binary targets and include `SHA256SUMS`. Downloads are pinned to the package version. Until a matching v2 release exists, build the native binary from source or use `--js`; this source overhaul does not publish an npm package or release automatically.
+
+## Layout
+
+```text
+core/                 bundle validation, routing, HTTP parser, connection state, VM
+platform/             Linux epoll and Windows select backends
+tools/lib/            bundle compiler/reader, Node server, installer, image optimizer
+tools/wz.js           CLI argument handling and backend selection
+tests/                native unit/socket tests and Node test suites
+bench/compare.js      repeatable original-versus-current build and Node HTTP benchmark
+docs/                 measured results and migration guide
 ```
 
-## The .web Bundle Format
-
-See `BUNDLE_SPEC.md` for the full specification.
-
-Short version:
-
-```
-[28 bytes]  header (magic, version, section offsets, total size)
-[N bytes]   route trie (64 bytes per node, packed binary)
-[M bytes]   asset table + brotli-compressed asset data
-[P bytes]   handler table + bytecode
-[96 bytes]  config (hostname, port, counts)
-```
-
-The entire file is validated at load time, then never touched again.
-
-## Constraints (Never Violated)
-
-- ✅ No `malloc`/`free` after `main()` initialization
-- ✅ No threads, no mutexes, no condition variables
-- ✅ No external libraries at runtime (only libc on Linux, kernel32+ws2_32 on Windows)
-- ✅ No config file parsing at server startup
-- ✅ C99 only — no C11, no GCC extensions, no compiler builtins except `__builtin_expect`
-- ✅ Compiles clean with `-Wall -Wextra -Wpedantic -Werror`
-
-## Stretch Goals (Future GitHub Issues)
-
-- [ ] TLS via embedded mbedTLS (~60KB overhead)
-- [ ] WASM handler support (replace bytecode VM with µWASM runtime)
-- [x] `.web` hot-reload without restart (`inotify` / `ReadDirectoryChangesW`)
-- [ ] ARM/RISC-V port for embedded targets
-- [x] `wz.js` image optimization: WebP support + responsive size generation
-
-## License
-
-Apache 2.0 — free to use, modify, and distribute. See `LICENSE` for details.
-
-> "The best code is no code. The second best is code that does exactly one thing with zero waste."
+See [BUNDLE_SPEC.md](BUNDLE_SPEC.md) for the format and [SECURITY.md](SECURITY.md) for scope and vulnerability reporting. Apache-2.0; see [LICENSE](LICENSE).

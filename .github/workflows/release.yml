@@ -17,8 +17,8 @@ jobs:
       - name: Build Linux x64
         run: |
           musl-gcc -O3 -static -o webzero-linux-x64 \
-            main.c core/pool.c core/bundle.c core/router.c core/vm.c platform/linux.c \
-            -I. -Wall -Wextra
+            main.c core/pool.c core/bundle.c core/router.c core/vm.c core/http.c core/connection.c platform/linux.c \
+            -I. -Wall -Wextra -Wpedantic -Werror
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -36,8 +36,8 @@ jobs:
       - name: Build Linux ARM
         run: |
           arm-linux-gnueabihf-gcc -O3 -static -o webzero-linux-arm \
-            main.c core/pool.c core/bundle.c core/router.c core/vm.c platform/linux.c \
-            -I. -Wall -Wextra
+            main.c core/pool.c core/bundle.c core/router.c core/vm.c core/http.c core/connection.c platform/linux.c \
+            -I. -Wall -Wextra -Wpedantic -Werror
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -55,8 +55,8 @@ jobs:
       - name: Build Windows x64
         run: |
           x86_64-w64-mingw32-gcc -O3 -o webzero-windows-x64.exe \
-            main.c core/pool.c core/bundle.c core/router.c core/vm.c platform/windows.c \
-            -I. -lws2_32 -lkernel32 -Wall -Wextra
+            main.c core/pool.c core/bundle.c core/router.c core/vm.c core/http.c core/connection.c platform/windows.c \
+            -I. -D_WIN32_WINNT=0x0501 -lws2_32 -lkernel32 -Wall -Wextra -Wpedantic -Werror
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -74,8 +74,8 @@ jobs:
       - name: Build Windows x86
         run: |
           i686-w64-mingw32-gcc -O3 -o webzero-windows-x86.exe \
-            main.c core/pool.c core/bundle.c core/router.c core/vm.c platform/windows.c \
-            -I. -lws2_32 -lkernel32 -Wall -Wextra
+            main.c core/pool.c core/bundle.c core/router.c core/vm.c core/http.c core/connection.c platform/windows.c \
+            -I. -D_WIN32_WINNT=0x0501 -lws2_32 -lkernel32 -Wall -Wextra -Wpedantic -Werror
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -90,10 +90,17 @@ jobs:
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
+      - name: Generate release checksums
+        shell: bash
+        run: |
+          for artifact in webzero-linux-x64 webzero-linux-arm webzero-windows-x64.exe webzero-windows-x86.exe; do
+            (cd "$artifact" && sha256sum "$artifact") >> SHA256SUMS
+          done
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            SHA256SUMS
             webzero-linux-x64/webzero-linux-x64
             webzero-linux-arm/webzero-linux-arm
             webzero-windows-x64.exe/webzero-windows-x64.exe

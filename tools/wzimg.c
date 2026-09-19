@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <errno.h>
 
 /* ------------------------------------------------------------------ */
 /* Vendored stb headers (compiled into this translation unit only)     */
@@ -98,7 +100,7 @@ static unsigned char *resize_bilinear(
     const unsigned char *src, int sw, int sh, int ch,
     int dst_w, int dst_h)
 {
-    unsigned char *dst = (unsigned char *)malloc((size_t)(dst_w * dst_h * ch));
+    unsigned char *dst = (unsigned char *)malloc((size_t)dst_w * (size_t)dst_h * (size_t)ch);
     if (!dst) return NULL;
 
     float sx = (float)sw / (float)dst_w;
@@ -135,8 +137,19 @@ int main(int argc, char *argv[])
 
     const char *in_path  = argv[1];
     const char *out_path = argv[2];
-    int         dst_w    = atoi(argv[3]);
-    int         quality  = (argc == 5) ? atoi(argv[4]) : 82;
+    char *end;
+    long parsed_width, parsed_quality = 82;
+    errno = 0; parsed_width = strtol(argv[3], &end, 10);
+    if (errno || !argv[3][0] || *end || parsed_width < 1 || parsed_width > 16383) {
+        fprintf(stderr, "wzimg: width must be an integer from 1 to 16383\n"); return 1;
+    }
+    if (argc == 5) {
+        errno = 0; parsed_quality = strtol(argv[4], &end, 10);
+        if (errno || !argv[4][0] || *end || parsed_quality < 1 || parsed_quality > 100) {
+            fprintf(stderr, "wzimg: quality must be an integer from 1 to 100\n"); return 1;
+        }
+    }
+    int dst_w = (int)parsed_width, quality = (int)parsed_quality;
 
     if (dst_w <= 0 || dst_w > 65535) {
         fprintf(stderr, "wzimg: invalid width '%s'\n", argv[3]);
@@ -149,6 +162,10 @@ int main(int argc, char *argv[])
 
     /* Decode input image */
     int src_w = 0, src_h = 0, src_ch = 0;
+    if (!stbi_info(in_path, &src_w, &src_h, &src_ch) || src_w <= 0 || src_h <= 0 ||
+        src_w > 16384 || src_h > 16384 || (uint64_t)src_w * (uint64_t)src_h > 64u * 1024u * 1024u) {
+        fprintf(stderr, "wzimg: invalid image or dimensions exceed 16384 / 64 megapixels\n"); return 1;
+    }
     unsigned char *src = stbi_load(in_path, &src_w, &src_h, &src_ch, 0);
     if (!src) {
         fprintf(stderr, "wzimg: cannot load '%s': %s\n",
@@ -161,7 +178,7 @@ int main(int argc, char *argv[])
     int            out_ch = src_ch;
     if (src_ch == 4) {
         /* Flatten alpha over white background */
-        rgb = (unsigned char *)malloc((size_t)(src_w * src_h * 3));
+        rgb = (unsigned char *)malloc((size_t)src_w * (size_t)src_h * 3u);
         if (!rgb) {
             fprintf(stderr, "wzimg: OOM during alpha flatten\n");
             stbi_image_free(src);
@@ -177,7 +194,7 @@ int main(int argc, char *argv[])
         out_ch = 3;
     } else if (src_ch == 2) {
         /* Gray + alpha → gray */
-        rgb = (unsigned char *)malloc((size_t)(src_w * src_h));
+        rgb = (unsigned char *)malloc((size_t)src_w * (size_t)src_h);
         if (!rgb) {
             fprintf(stderr, "wzimg: OOM\n");
             stbi_image_free(src);

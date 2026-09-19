@@ -9,7 +9,7 @@
 #include <stddef.h>
 
 #define WEB_MAGIC   0x57454230u   /* "WEB0" */
-#define WEB_VERSION 1u
+#define WEB_VERSION 2u
 
 /* On-disk header (28 bytes, little-endian) */
 typedef struct {
@@ -23,7 +23,7 @@ typedef struct {
 } __attribute__((packed)) BundleHeader;
 
 /*
- * Asset entry — on-disk layout is exactly 56 bytes (matches wz.js ASSET_ENTRY_SIZE).
+ * Asset entry — on-disk layout is exactly 56 bytes (shared with tools/lib/bundle.js).
  *
  * Byte map:
  *   [0 ]  offset          uint32
@@ -33,7 +33,7 @@ typedef struct {
  *   [44]  encoding        uint8   (0=raw, 1=brotli)
  *   [45]  _pad1[3]        uint8[3]
  *   [48]  webp_idx        int32   (-1 = no WebP variant)
- *   [52]  _pad2[4]        uint8[4]
+ *   [52]  raw_offset      uint32 (v2 only)
  * Total: 56 bytes
  */
 typedef struct {
@@ -44,7 +44,7 @@ typedef struct {
     uint8_t  encoding;      /* 0=raw, 1=brotli */
     uint8_t  _pad1[3];
     int32_t  webp_idx;      /* index of WebP variant asset, or -1 */
-    uint8_t  _pad2[4];
+    uint32_t raw_offset; /* v2: identity payload offset relative to asset data */
 } __attribute__((packed)) AssetEntry;
 
 /* Handler entry (stored as flat array in HANDLERS section) */
@@ -68,6 +68,7 @@ typedef struct {
 typedef struct {
     const uint8_t  *base;           /* mmap base pointer */
     size_t          file_size;
+    uint32_t version, data_offset, fingerprint;
     BundleConfig    config;
     const AssetEntry   *assets;     /* pointer into mmap */
     const HandlerEntry *handlers;   /* pointer into mmap */
@@ -80,7 +81,7 @@ int bundle_load(const char *path, Bundle *out);
 /* Unmap the bundle (called only on server shutdown). */
 void bundle_unload(Bundle *b);
 
-/* Validate the bundle magic and version. */
+/* Validate header, sections, payload ranges and metadata. Router validates the tree. */
 int bundle_validate(const Bundle *b);
 
 #endif /* WZ_BUNDLE_H */

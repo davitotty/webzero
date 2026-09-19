@@ -37,6 +37,7 @@ fi
 echo "[bench] Starting webzero..."
 ./webzero "$BUNDLE" "$PORT" &
 WZ_PID=$!
+trap 'kill "$WZ_PID" 2>/dev/null || true' EXIT
 sleep 0.5
 
 # Warm-up pass
@@ -51,7 +52,7 @@ wrk -t"$THREADS" -c"$CONNECTIONS" -d"${DURATION}s" \
     "http://localhost:$PORT/"
 
 # Cleanup
-kill $WZ_PID 2>/dev/null || true
+kill "$WZ_PID" 2>/dev/null || true
 
 echo ""
 echo "[bench] Done."
